@@ -58,4 +58,4 @@ make clean
 - Enhance synthetic longitudinal generator to better mimic slopes/temporal correlations (e.g., spline, spectral/FDA-inspired simulations) so S4/S5 preview more realistically.
 
 ## Collaborators
-- Pipeline design and experimentation were collaboratively developed by me and my college; identifiable names are intentionally omitted in this public GitHub version.
+- Pipeline design and experimentation were collaboratively developed by me and my senior colleague; identifiable names are intentionally omitted in this public GitHub version.
