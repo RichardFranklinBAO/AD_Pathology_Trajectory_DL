@@ -1,4 +1,6 @@
-# Inferring Alzheimer’s Disease (AD) Pathologies from Clinical Measures via Cross-Validated Deep Learning Models (Reproducible Pipeline)
+# Alzheimer's Pathology Trajectory Prediction Pipeline
+
+**A Reproducible Machine Learning Workflow for Longitudinal Clinical Data**
 One-stop, mixed Make/Python/R workflow for Alzheimer's pathology trajectory modeling and prediction. This repo mirrors the research pipeline with a reproducibility-first layout.
 
 ## Data (dummy-friendly)
