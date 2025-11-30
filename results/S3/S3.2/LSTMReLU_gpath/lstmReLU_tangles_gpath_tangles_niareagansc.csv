@@ -1,0 +1,2 @@
+hidden_size,num_layers,learning_rate,batch_size,dropout_rate,gpath,tangles,niareagansc
+8,4,0.01,16,0.0,0.1217125112698132,0.06668100856690685,0.16110241796042354

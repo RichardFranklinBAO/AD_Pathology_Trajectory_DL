@@ -1,0 +1,122 @@
+---
+title: "Combining_clean_imputed_dataset_for_all_decedents"
+author: "Conglin BAO"
+date: "2025-10-08"
+output: html_document
+---
+
+
+```{r}
+library(here)
+library(readr)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(glue)
+
+here::i_am("scripts/S3_Training_ML_Models_and_Predicting_Pathologies_only_for_Decedents/S3.2_Predicting_Pathologies_only_for_Decedents/Combining_clean_imputed_dataset_for_all_decedentstled.Rmd")
+
+```
+
+
+```{r}
+# 2. Define Base Input and Output Paths (Based on results/S3/S3.2)
+
+# All model outputs are located in subdirectories under results/S3/S3.2
+BASE_RESULTS_DIR <- here::here("results", "S3", "S3.2")
+
+# The combined result will also be saved in the S3.2 root directory
+OUTPUT_DIR <- BASE_RESULTS_DIR
+
+# Check if the directory exists to assist with debugging
+if (!dir.exists(BASE_RESULTS_DIR)) {
+  stop(glue::glue("Base results directory not found: {BASE_RESULTS_DIR}\nDid you run the previous Python scripts?"))
+}
+print(glue::glue("Working with results in: {BASE_RESULTS_DIR}"))
+```
+
+```{r}
+# 3. Define Helper Function (Reproducible Read)
+
+read_pred_csv <- function(model_name, pred_col) {
+  
+  # Construct the specific result directory for the model: results/S3/S3.2/{model_name}
+  # Note: The Python script saves results directly into the model_name folder
+  model_result_dir <- file.path(BASE_RESULTS_DIR, model_name)
+  
+  if (!dir.exists(model_result_dir)) {
+    stop(glue::glue("Directory not found for model: {model_name} at {model_result_dir}"))
+  }
+
+  # Find CSV files containing "clean" in the filename
+  files <- list.files(
+    path = model_result_dir,
+    pattern = "clean.*\\.csv$",
+    full.names = TRUE
+  )
+  
+  if (length(files) == 0) {
+    stop(glue::glue("No 'clean*.csv' found in {model_result_dir}"))
+  }
+  
+  # If multiple files are found, use the first one and issue a warning
+  target_file <- files[1]
+  if (length(files) > 1) {
+    message(glue::glue("⚠️  Multiple files found for {model_name}, using: {basename(target_file)}"))
+  } else {
+    message(glue::glue("Reading {model_name}: {basename(target_file)}"))
+  }
+
+  # Read data
+  df <- readr::read_csv(target_file, show_col_types = FALSE)
+
+  # Check if the target column exists
+  if (!pred_col %in% names(df)) {
+    stop(glue::glue("Column '{pred_col}' not found in {basename(target_file)}"))
+  }
+
+  # Extract and normalize data
+  df %>%
+    dplyr::select(projid, fu_year, !!pred_col) %>%
+    dplyr::mutate(
+      projid = suppressWarnings(as.integer(projid)),
+      fu_year = suppressWarnings(as.numeric(fu_year))
+    )
+}
+```
+
+
+```{r}
+# 4. Define Model Mapping
+# dir: Corresponds to the folder name under results/S3/S3.2/
+# pred: Corresponds to the column name in the CSV file
+model_map <- tibble::tibble(
+  dir = c("BiLSTM_amyloid", "BiLSTM_nia", "LSTM_tangles", "LSTMReLU_gpath"),
+  pred = c("pred_amyloid",  "pred_niareagansc", "pred_tangles", "pred_gpath")
+)
+
+# Batch Read
+message("--- Starting Data Import ---")
+pred_list <- purrr::pmap(model_map, ~ read_pred_csv(..1, ..2))
+
+# Combine Data (Full Join to ensure no data loss)
+message("--- Combining Datasets ---")
+combined <- Reduce(
+  function(x, y) dplyr::full_join(x, y, by = c("projid", "fu_year")),
+  pred_list
+) %>%
+  dplyr::arrange(projid, fu_year)
+
+# Preview Data
+print(dplyr::glimpse(combined))
+```
+
+```{r}
+# 5. Save Results to results/S3/S3.2/
+# Target Path: results/S3/S3.2/combined_clean_preds_only_for_decedents.csv
+
+output_file_path <- file.path(OUTPUT_DIR, "combined_clean_preds_only_for_decedents.csv")
+
+readr::write_csv(combined, output_file_path)
+```
+

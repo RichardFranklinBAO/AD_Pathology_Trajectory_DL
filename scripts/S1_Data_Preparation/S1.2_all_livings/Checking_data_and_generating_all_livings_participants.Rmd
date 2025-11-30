@@ -1,0 +1,86 @@
+---
+title: "Checking_data"
+author: "Conglin BAO"
+date: "2025-10-29"
+output: html_document
+---
+
+```{r}
+library(readr)
+library(here)
+library(dplyr) 
+library(conflicted)
+library(glue)
+conflicted::conflicts_prefer(dplyr::filter)
+conflicted::conflicts_prefer(dplyr::lag)  # 若也用到了 lag
+here::i_am('scripts/S1_Data_Preparation/S1.2_all_livings/Checking_data_and_generating_all_livings_participants.Rmd')
+```
+
+```{r}
+input_dir_1  <- here::here("data", "raw")
+input_dir_2  <- here::here("results", "S1", "S1.1")
+
+output_dir <- here::here("results", "S1", "S1.2")
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+  message(glue("Created output directory: {output_dir}"))
+} else {
+  message(glue("Output directory already exists: {output_dir}"))
+}
+```
+
+```{r}
+adding_infor_DF <- read_tsv(file.path(input_dir_1, 'dt_long_baseline_merged_03_2024.tsv'))
+
+age_death_per_id <- adding_infor_DF %>%
+  dplyr::group_by(projid) %>%
+  dplyr::summarise(age_death = dplyr::first(na.omit(age_death)), .groups = "drop")
+
+age_death_per_id <- age_death_per_id %>%
+  mutate(projid = as.character(projid))
+```
+
+```{r}
+df1 <- read_csv(file.path(input_dir_2, 'scaled_test_with_modifiedNIA_0725.csv'))
+df2 <- read_csv(file.path(input_dir_2, 'scaled_train_with_modifiedNIA_0725.csv'))
+
+combined_df <- bind_rows(df1, df2)
+combined_df <- combined_df %>%
+  mutate(projid = as.character(projid),
+         fu_year = as.numeric(fu_year))
+
+# 2) 再做 join
+out2 <- combined_df %>% left_join(age_death_per_id, by = "projid")
+```
+
+```{r}
+cat(glue("The length of unique projid of out2 is {length(unique(out2$projid))}.\n"))  # 2639
+out2 %>% # 1128 livings
+  filter(is.na(age_death) | !is.finite(age_death)) %>%
+  summarise(unique_projid_count = n_distinct(projid))
+
+eligible_ids_2 <- out2 %>%
+  dplyr::filter(!is.na(age_death) & is.finite(age_death)) %>%
+  dplyr::distinct(projid) %>%
+  dplyr::pull(projid)
+
+cat(glue("The length of unique projid of decedents is {length(eligible_ids_2)}\n"))
+```
+
+```{r}
+bad_age_death_rows2 <- out2 %>% dplyr::filter(is.na(age_death) | !is.finite(age_death))
+good_age_death_rows2 <- out2 %>% dplyr::filter(!is.na(age_death) & is.finite(age_death))
+
+livings <- bad_age_death_rows2 %>% dplyr::select(-age_death)
+decedents <- good_age_death_rows2 %>% dplyr::select(-age_death)
+
+write_csv(livings, file = file.path(output_dir, 'livings.csv'))
+```
+
+```{r}
+length(unique(livings$projid))
+length(unique(decedents$projid))
+```
+
+

@@ -1,0 +1,19 @@
+GLM Elastic Net Performance Report
+==================================
+
+Outcome: amyloid
+  Best Params: alpha=1.0, l1_ratio=0.05
+  Test R^2: -0.1888
+--------------------------------------------------
+Outcome: gpath
+  Best Params: alpha=0.464, l1_ratio=0.3
+  Test R^2: -0.0579
+--------------------------------------------------
+Outcome: tangles
+  Best Params: alpha=0.464, l1_ratio=0.4
+  Test R^2: 0.0439
+--------------------------------------------------
+Outcome: niareagansc
+  Best Params: alpha=1.0, l1_ratio=0.05
+  Test R^2: -0.0041
+--------------------------------------------------

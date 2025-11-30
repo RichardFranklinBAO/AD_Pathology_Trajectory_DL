@@ -1,0 +1,2 @@
+hidden_size,num_layers,learning_rate,batch_size,dropout_rate,amyloid,niareagansc,tangles
+16,3,0.01,64,0.0,0.413947189512138,0.31535965344044525,0.1722730302945762

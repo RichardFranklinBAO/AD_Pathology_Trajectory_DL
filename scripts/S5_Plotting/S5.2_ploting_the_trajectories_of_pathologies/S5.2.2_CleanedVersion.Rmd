@@ -1,0 +1,1295 @@
+---
+title: "ADP_Drawing_Plots_step6"
+author: "Conglin BAO"
+date: "2025-04-18"
+output: html_document
+---
+
+## Introduction
+K-means clustering is one of the most common ML methods to group the unlabelled data points by defining the number of centroids you need in the dataset. Every data point is allocated to each of the clusters through reducing the in-cluster sum of squares. Normally, we use Euclidean distance as the distance metric, so does this project since the imputed pathologies are all numeric.
+
+In this project, k-means clustering is applied to predicted pathologies calculated from a ML model. 
+
+## workflow
+
+1. Data Import & Preprocessing
+
+	- Load Predicted_Pathology; split into decedents and living based on age_death.
+	-	Use onset/enroll_last to create the timeline; rename four prediction columns to pred_*.
+	-	Generate AD_status → AD_label (ADD / MCI / NCI); remove samples with AD_label = NA.
+
+2. Feature Construction (for clustering)
+
+	-	Function my_dt_build(): For each subject, extract the “event time value + last 5 differences” (fill with zeros if fewer than 6), resulting in 24 features (6×4) + projid.
+	-	Apply this to decedents → cdf_decedents, and to living → cdf_living; standardize using the mean/SD from decedents, then apply the same centering and scaling to living.
+
+3. Clustering & Projection
+
+	-	Perform k-means clustering (k=3) on cdf_decedents and save the centroids.
+	-	Assign each living participant to the nearest centroid (minimum Euclidean distance).
+	-	Run PCA on cdf_decedents (PC1/PC2) and project living participants onto the same PCA space; visualize clusters in scatter plots.
+
+4. Trajectory Data & Grouping
+
+	-	Merge PC_label_* back into the original row-level data to get total_trend_plot_*.
+	-	Create condition (Before/After Onset, MCI, NCI).
+	-	Split into cluster1/2/3_{decedents|living}, and create cut subsets (timeline ∈ [-5, 3]).
+
+5. Axis Range Calculation & Plotting
+
+	-	Compute the global [min, max] for each pred_* across complete and cut datasets.
+	-	Function my_mcinci_fixed_y(): For a single AD_label (ADD / MCI / NCI), draw a single-panel plot for a given cluster (fixed y-axis, consistent color mapping).
+	-	Nested loops: For each pathology × cluster × AD_label, generate plots and save to ClusteringPlots/....
+
+6. Image Combination & Export
+
+	-	Use magick to merge plots into a 4 rows (pathologies) × 3 columns (clusters) layout.
+	-	Export combined overviews for Decedents / Living × Complete / Cut × (ADD / MCI / NCI).
+	-	Save each cluster’s projid list and additional verification tables.
+
+## Step 1
+## Step 1.1
+# setup environment:
+```{r}
+library(dplyr)
+library(data.table)
+library(readxl)
+library(xtable)
+library(caret) 
+library(glmnet)
+library(ROCR)
+library(plotROC) 
+library(pROC)
+library(Publish)
+library(survival)
+library(riskRegression)
+library(ggplot2)
+library(tidyverse)
+library(ggpubr)
+library(Rcpp)
+library("ggVennDiagram")
+library(glue) 
+library(purrr) 
+library(magick)
+# install.packages("fs")  # 若未安装
+library(fs)
+library(here)
+here::i_am('scripts/S5_Plotting/S5.2_ploting_the_trajectories_of_pathologies/S5.2.2_CleanedVersion.Rmd')
+
+
+filter <- dplyr::filter
+lag <- dplyr::lag
+#conflict_prefer("mutate", "dplyr")
+
+source('./Rfunc_yang.r')
+source('./utility_funcs_yang.r')
+
+
+library(knitr)
+library(ggplot2)
+opts_chunk$set(
+  echo = FALSE, warning = FALSE, message = FALSE
+)
+theme_set(theme(
+  text = element_text(size = 12, family = "Arial",face="bold"), # Base text size and font for the plot
+  plot.title = element_text(size = 24, face = "bold"), # Size and style for the plot title
+  axis.title.x = element_text(size = 18, face = "bold"), # Size and style for the x-axis title
+  axis.title.y = element_text(size = 18, face = "bold",angle=90), # Size and style for the y-axis title
+  #axis.text.x = element_text(size = 15, face = "bold"),
+  #axis.text.y = element_text(size = 15, face = "bold"),
+  legend.text = element_text(size = 15), # Size for the legend text
+  legend.title = element_text(size = 10, face = "bold"),
+  legend.position = "bottom"# Size and style for the legend title
+))
+```
+
+```{r}
+# --- 2. Define Input & Output Paths (Reproducible) ---
+
+# Input A: Intermediate Data from S5.1 (or S5.2.1 if created there)
+# Note: The original code read "Predicted_Pathology_AddingInforWith2Conditions.csv"
+# This was generated in S5.2.1. So we read from S5.2.1 results.
+INPUT_S521_DIR <- here::here("results", "S5", "S5.2", "S5.2.1")
+PRED_PATHOLOGY_FILE <- file.path(INPUT_S521_DIR, "Predicted_Pathology_AddingInforWith2Conditions.csv")
+
+# Input B: Raw Data (for dcfdx if needed, though previous step added it)
+RAW_DATA_DIR <- here::here("data", "raw")
+
+# Output: S5.2.2 Results
+OUTPUT_DIR <- here::here("results", "S5", "S5.2", "S5.2.2")
+OUTPUT_S6_DIR <- OUTPUT_DIR # Mapping S6 outputs to S5.2.2 for consistency with request
+OUTPUT_PLOTS_DIR <- file.path(OUTPUT_DIR, "ClusteringPlots")
+OUTPUT_PCA_DIR <- file.path(OUTPUT_DIR, "Plots_PCA_R")
+OUTPUT_DEC_PROJIDS <- file.path(OUTPUT_DIR, "Decedents_cluster_projids")
+OUTPUT_LIV_PROJIDS <- file.path(OUTPUT_DIR, "Livings_cluster_projids")
+
+# Create directories
+dir_create(OUTPUT_DIR)
+dir_create(OUTPUT_PLOTS_DIR)
+dir_create(OUTPUT_PCA_DIR)
+
+print(glue("Reading Input from: {INPUT_S521_DIR}"))
+print(glue("Saving Outputs to:  {OUTPUT_DIR}"))
+```
+
+```{r}
+# --- 3. Load Data ---
+
+if (!file.exists(PRED_PATHOLOGY_FILE)) stop(glue("Missing Input File: {PRED_PATHOLOGY_FILE}"))
+
+Predicted_Pathology <- read_csv(PRED_PATHOLOGY_FILE, show_col_types = FALSE)
+
+# Split into Decedents and Living
+event_dt_decedents <- Predicted_Pathology %>% filter(!is.na(age_death))
+event_dt_living    <- Predicted_Pathology %>% filter(is.na(age_death))
+
+cat(glue("Decedents: {nrow(event_dt_decedents)} rows | {n_distinct(event_dt_decedents$projid)} IDs\n"))
+cat(glue("Living:    {nrow(event_dt_living)} rows | {n_distinct(event_dt_living$projid)} IDs\n"))
+```
+
+# Using generated dataset with 2 conditions (Predicted_Pathology_AddingInforWith2Conditions_From0625V4S5_V2.csv)
+  (1: At least two visits. 
+   2: No ADD at the first 2 visits. ) 
+# Getting dataset for decedents and living patients separately
+
+```{r}
+# Just checking information
+table(event_dt_decedents$ADD)
+table(event_dt_living$ADD)
+
+counts_by_ADD_decedents <- event_dt_decedents %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD_decedents)
+
+counts_by_ADD_living <- event_dt_living %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD_living)
+```
+
+
+# Next step
+```{r}
+# Creating variables 'timeline' for decedents
+total_trend_plot_decedents = event_dt_decedents
+total_trend_plot_decedents$ADD=factor(total_trend_plot_decedents$ADD)
+total_trend_plot_decedents$timeline = ifelse(total_trend_plot_decedents$ADD==1, 
+                                   total_trend_plot_decedents$fu_year - total_trend_plot_decedents$onset, 
+                                   total_trend_plot_decedents$fu_year - total_trend_plot_decedents$enroll_last)
+event_dt_decedents <- total_trend_plot_decedents # This is necessary for 1st plotting as we ignoring the following steps in this code chunk.
+
+# Creating variables 'timeline' for living
+total_trend_plot_living = event_dt_living
+total_trend_plot_living$ADD=factor(total_trend_plot_living$ADD)
+total_trend_plot_living$timeline = ifelse(total_trend_plot_living$ADD==3, 
+                                   total_trend_plot_living$fu_year - total_trend_plot_living$onset, 
+                                   total_trend_plot_living$fu_year)
+event_dt_living <- total_trend_plot_living 
+
+
+
+```
+
+
+```{r}
+
+# Renaming
+event_dt_decedents <- event_dt_decedents %>%
+  rename(
+  pred_tangles = tangles_pred,
+  pred_amyloid = amyloid_pred,
+  pred_gpath   = gpath_pred,
+  pred_NIA     = niareagansc_pred
+  )
+
+event_dt_living <- event_dt_living %>%
+  rename(
+  pred_tangles = tangles_pred,
+  pred_amyloid = amyloid_pred,
+  pred_gpath   = gpath_pred,
+  pred_NIA     = niareagansc_pred
+  )
+
+
+print(event_dt_decedents)
+print(event_dt_living)
+# event = 0 (censored if dcfdx_max %in% c(1, 2, 3))
+# event = 1 (dementia if dcfdx_max %in% c(4, 5) or dcfdx = 4 or 5 happening before dcfdx = 6)
+# event = 2 (death if dcfdx_max %in% c(1, 2, 3) & (!is.na(age_death)))
+# event = NA (Others)
+```
+
+## Step 2
+# S2.1 Setting my_dt_build function
+```{r}
+# build the df that is used for k-means clustering; df - dataframe; dt - data or data table
+my_dt_build = function(df){
+  # store the result
+total_dt = data.frame(projid = NULL,ctangle=NULL,camyloid=NULL,cgpath=NULL,cNIA=NULL)
+
+# for each patients,
+for (projs in unique(df$projid)){
+  temp = as.data.frame(df[df$projid==projs,]) #we want all visit data of each patient
+  temp = temp[order(temp$fu_year), ] %>% filter(fu_year>time-5) # only remain the last five visits # time = death (D) or get disease (D&L) or last_visit (L).
+  length = dim(temp)[1] # How many visits each patient have after applying filtering rules. # of rows
+  # if we have more than 6 recorded pathologies: great. just calculate the difference between them
+  if (dim(temp)[1]>=6){
+  tangle = c(temp[length,"pred_tangles"],diff(temp$pred_tangles))
+  amyloid = c(temp[length,"pred_amyloid"],diff(temp$pred_amyloid))
+  gpath = c(temp[length,"pred_gpath"],diff(temp$pred_gpath))
+  NIA = c(temp[length,"pred_NIA"],diff(temp$pred_NIA))
+  }
+  
+else if (nrow(temp) < 6) {
+  # Actual number of observed visits
+  m <- nrow(temp)
+  # Number of zeros to insert
+  n_pad <- 6 - m
+  
+  # First part: absolute value at the event time + “0 padding” + difference sequence
+  tangle  <- c(
+    temp[m, "pred_tangles"],     # 1st: T0_tangle
+    rep(0, n_pad),               # Then insert n_pad zeros → corresponding to the first few of tangle_T54, ...
+    diff(temp$pred_tangles)      # Finally m-1 differences → corresponding to the remaining tangle_* columns
+  )
+  amyloid <- c(
+    temp[m, "pred_amyloid"],
+    rep(0, n_pad),
+    diff(temp$pred_amyloid)
+  )
+  gpath   <- c(
+    temp[m, "pred_gpath"],
+    rep(0, n_pad),
+    diff(temp$pred_gpath)
+  )
+  NIA     <- c(
+    temp[m, "pred_NIA"],
+    rep(0, n_pad),
+    diff(temp$pred_NIA)
+  )
+}
+
+  # record the data for the patient, and prepare for the next patient looping
+  small = data.frame(projid = projs,ctangle=tangle[1:6],camyloid=amyloid[1:6],cgpath=gpath[1:6],cNIA=NIA[1:6])
+  total_dt = rbind(total_dt,small)
+}
+
+#View(total_dt)
+# transform the long df to wide df. 
+total_dt = total_dt %>% group_by(projid) %>% mutate(fu_year_rank = 1:6) %>% ungroup()
+df_analysis <- total_dt %>%
+  pivot_longer(cols = starts_with("c"), names_to = "pred_type", values_to = "value") %>%
+  mutate(new_col_name = paste0(pred_type,fu_year_rank)) %>%
+  select(-pred_type, -fu_year_rank) %>%
+  pivot_wider(names_from = new_col_name, values_from = value)
+return(df_analysis)
+}
+
+```
+
+
+
+# S2.2 Applying our data into the my_dt_build function for both decedents and livings.
+
+```{r}
+# synthesize the df for data processing
+cdf_decedents = my_dt_build(event_dt_decedents)%>%na.omit() #na.omit has no effect on the result. The dimension is to 745 x 25 from 7,783 x 17
+cdf_living = my_dt_build(event_dt_living)%>%na.omit()
+
+
+# Variables used to reapply the cluster model generated from decedents to livings.
+decedent_features <- cdf_decedents[,-1]  
+living_features <- cdf_living[,-1]
+
+decedent_scaled   <- scale(decedent_features)
+living_scaled   <- scale(
+  living_features,
+  center = attr(decedent_scaled, "scaled:center"),
+  scale  = attr(decedent_scaled, "scaled:scale")
+)
+
+# rename columns for clarity
+col_name = c("projid","T0_tangle","T0_amyloid","T0_gpath","T0_NIA",
+             "tangle_T54","amyloid_T54","gpath_T54","NIA_T54",
+             "tangle_T43","amyloid_T43","gpath_T43","NIA_T43",
+             "tangle_T32","amyloid_T32","gpath_T32","NIA_T32",
+             "tangle_T21","amyloid_T21","gpath_T21","NIA_T21",
+             "tangle_T10","amyloid_T10","gpath_T10","NIA_T10"
+             )
+colnames(cdf_decedents) = col_name
+colnames(cdf_living) = col_name
+
+# Save Intermediate RDS
+saveRDS(cdf_decedents, file.path(OUTPUT_DIR, "clustering_feature_cdf_decedents.RDS"))
+saveRDS(cdf_living,    file.path(OUTPUT_DIR, "clustering_feature_cdf_living.RDS"))
+
+print(cdf_decedents)
+print(cdf_living)
+```
+
+
+## Step 3: Conduct clustering, determine the optimum number of centroids by elbow curve
+# Srep 3.1: Setting the neccssary 'my_cluster' & 'my_viz_cluster' functions
+```{r}
+# generate an average Within-Cluster Sum of Squares (WSS) plot for each centers = 1 to 10. 
+my_cluster = function(df,filename,title="true positive cases predicted by the Cox model "){
+cluster_df = scale(df[,-1])
+avg = c()
+library(factoextra)
+
+for (k in 1:10){
+  km.out1=kmeans(cluster_df,centers=k,nstart=25)
+  avg = c(avg,km.out1$tot.withinss/k)
+}
+
+plot_data <- data.frame(k = 1:10, average_wss = avg)
+
+# Plot average WSS by number of clusters
+print(ggplot(plot_data, aes(x = k, y = average_wss)) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Average WSS by Number of Clusters",
+       subtitle=title,
+       x = "Number of Clusters (k)",
+       y = "Average Within-Cluster SS"))+theme(text = element_text(size = 12, family = "Arial",face="bold"), # Base text size and font for the plot
+  plot.title = element_text(size = 24, face = "bold"), # Size and style for the plot title
+  axis.title.x = element_text(size = 18, face = "bold"), # Size and style for the x-axis title
+  axis.title.y = element_text(size = 18, face = "bold",angle=90), # Size and style for the y-axis title
+  #axis.text.x = element_text(size = 15, face = "bold"),
+  #axis.text.y = element_text(size = 15, face = "bold"),
+  legend.text = element_text(size = 15), # Size for the legend text
+  legend.title = element_text(size = 20, face = "bold"),
+  legend.position = "bottom")
+
+ggsave(filename = filename, height = 7, width = 10)
+return(cluster_df)
+}
+
+# visualize the clusters depends on how many clusters we want
+my_viz_cluster=function(kmeans_df,center,title=""){
+for (i in (2:center)){
+  k = kmeans(kmeans_df,centers=i,nstart=25) 
+  p <- fviz_cluster(k, geom = "text", data = kmeans_df) + ggtitle(paste0("k = ",i,title)) # geom = "text" 啥意思？
+  print(p)
+}
+}
+```
+
+# Step 3.2: Visualizing the Cluters
+```{r}
+# all_sample_cluster is replaced by cluster_decedents
+# all_sample_re is replaced by re_decedents
+elbow_plot_path <- file.path(OUTPUT_PCA_DIR, "elbow.jpg")
+cluster_decedents = my_cluster(cdf_decedents, filename = elbow_plot_path, title = "Decedents") %>% as.data.frame() # 745 × 24
+cat(glue("Saved Elbow Plot to: {elbow_plot_path}\n"))
+my_viz_cluster(cluster_decedents,6) # Checkings
+set.seed(2025)
+re_decedents = kmeans(cluster_decedents,centers=3,nstart=25)
+centers <- re_decedents$centers # Used for 3.2.2 to cluster living ADD participants.
+glue("this is the re_decedents with centers equal to 3")
+saveRDS(re_decedents, file.path(OUTPUT_DIR, "re_decedents.rds"))
+re_decedents
+table(re_decedents$cluster)
+```
+
+# Step 3.2.2 for living ADD participants
+```{r}
+# ——(c) Assign labels to each row using the minimum Euclidean distance——
+# Calculate the Euclidean distance from each sample to each cluster center, 
+# and take the index of the center with the smallest distance
+cdf_living$cluster <- apply(
+  living_scaled,            # Matrix: n_samples × n_features
+  1,                        # "1" means apply the function to rows
+  function(x_row) {
+    dists <- rowSums((centers - x_row)^2)
+    which.min(dists)
+  }
+)
+```
+
+# Step 3.3: Doing the PCA
+```{r}
+# Adding more information - get ADD status for each sample
+
+info_dt_decedents = event_dt_decedents %>% group_by(projid) %>% summarise(AD_status = max(dcfdx_max)) %>% select(projid, AD_status) %>% mutate(
+  AD_label=case_when(
+    AD_status == 1 ~ "NCI",
+    AD_status %in% c(2,3) ~ "MCI",
+    AD_status %in% c(4,5) ~ "ADD"
+  )
+)
+
+
+info_dt_living = event_dt_living %>% group_by(projid) %>% summarise(AD_status = max(dcfdx_max)) %>% select(projid, AD_status) %>% mutate(
+  AD_label=case_when(
+    AD_status == 1 ~ "NCI",
+    AD_status %in% c(2,3) ~ "MCI",
+    AD_status %in% c(4,5) ~ "ADD"
+  )
+)
+
+```
+
+```{r}
+# Checking information
+library(dplyr)
+
+# For decedents: group samples by ADD and count the number of unique projid
+counts_by_ADD_decedents <- event_dt_decedents %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD_decedents)
+
+# For living participants: group samples by ADD and count the number of unique projid
+counts_by_ADD_living <- event_dt_living %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD_living)
+```
+
+
+
+```{r}
+
+# Adding 'cluster' for re_decedents
+cluster_decedents$cluster = re_decedents$cluster
+# Adding 'projid' for re_decedents
+cluster_decedents$projid = cdf_decedents$projid
+# Do PCA on the processed df.
+PCA = prcomp(cluster_decedents[,1:24])
+PC_label_decedents = PCA$x %>% as.data.frame() %>% select("PC1","PC2") %>% mutate(projid = cluster_decedents$projid, cluster = cluster_decedents$cluster) %>% 
+  left_join(info_dt_decedents, by="projid") # info_dt includes information, like, projid, AD_status.
+
+PC_label_decedents$cluster=as.factor(PC_label_decedents$cluster)
+PC_label_decedents$AD_label=as.factor(PC_label_decedents$AD_label)
+
+# Display the plot
+explained_variance <- PCA$sdev^2
+total_variance <- sum(explained_variance)
+explained_variance_percent <- 100 * explained_variance / total_variance
+
+# Get the variance explained by the first two principal components
+pc1_variance <- round(explained_variance_percent[1],2)
+pc2_variance <- round(explained_variance_percent[2],2)
+```
+
+```{r}
+living_pca_coords <- predict(
+  PCA,
+  newdata = setNames(
+    as.data.frame(living_scaled),
+    colnames(cluster_decedents)[1:24]
+  )
+)
+PC_label_living = as.data.frame(living_pca_coords) %>% select("PC1","PC2") %>% mutate(projid = cdf_living$projid, cluster = cdf_living$cluster) %>% 
+  left_join(info_dt_living, by="projid") # info_dt_living includes information, like, projid, AD_status.
+```
+
+# Step 3.4: Drawing the clustering
+```{r}
+# For decedents
+# Label by ADD status
+clustering_plot <- ggplot(PC_label_decedents, aes(x = PC1, y = PC2, shape=AD_label,color = cluster)) +
+  geom_point(alpha = 0.6) + # Plot points with some transparency
+  scale_color_brewer(palette = "Set1") + # Use color palette for distinction
+  theme_minimal() + # Minimal theme
+  labs(title = "Clustering Plot of PCA Results", 
+       x = paste0("PC1 (",pc1_variance,"% Variance Explained)"), 
+       y = paste0("PC2 (",pc2_variance,"% Variance Explained)"), 
+       color = "Cluster")+theme(text = element_text(size = 12, family = "Arial",face="bold"), # Base text size and font for the plot
+  plot.title = element_text(size = 24, face = "bold"), # Size and style for the plot title
+  axis.title.x = element_text(size = 18, face = "bold"), # Size and style for the x-axis title
+  axis.title.y = element_text(size = 18, face = "bold",angle=90), # Size and style for the y-axis title
+  #axis.text.x = element_text(size = 15, face = "bold"),
+  #axis.text.y = element_text(size = 15, face = "bold"),
+  legend.text = element_text(size = 15), # Size for the legend text
+  legend.title = element_text(size = 20, face = "bold"),
+  legend.position = "bottom")
+clustering_plot 
+ggsave(file.path(OUTPUT_PCA_DIR, "Clusteringplot_Decedents.jpg"), width=10, height=7)
+```
+
+```{r}
+# For living - living_scaled
+clustering_plot <- ggplot(PC_label_living, aes(x = PC1, y = PC2, shape=AD_label,color = as.factor(cluster))) +
+  geom_point(alpha = 0.6) + # Plot points with some transparency
+  scale_color_brewer(palette = "Set1") + # Use color palette for distinction
+  theme_minimal() + # Minimal theme
+  labs(title = "Clustering Plot of PCA Results", 
+       x = paste0("PC1 (",pc1_variance,"% Variance Explained)"), 
+       y = paste0("PC2 (",pc2_variance,"% Variance Explained)"), 
+       color = "Cluster")+theme(text = element_text(size = 12, family = "Arial",face="bold"), # Base text size and font for the plot
+  plot.title = element_text(size = 24, face = "bold"), # Size and style for the plot title
+  axis.title.x = element_text(size = 18, face = "bold"), # Size and style for the x-axis title
+  axis.title.y = element_text(size = 18, face = "bold",angle=90), # Size and style for the y-axis title
+  #axis.text.x = element_text(size = 15, face = "bold"),
+  #axis.text.y = element_text(size = 15, face = "bold"),
+  legend.text = element_text(size = 15), # Size for the legend text
+  legend.title = element_text(size = 20, face = "bold"),
+  legend.position = "bottom")
+clustering_plot 
+ggsave(file.path(OUTPUT_PCA_DIR, "Clusteringplot_Living.jpg"), width=10, height=7)
+```
+
+
+## Step 4: plot the pathological trend in Kmeans clustering result
+```{r}
+total_trend_plot_decedents = event_dt_decedents %>% merge(PC_label_decedents,by=c("projid"))
+total_trend_plot_living = event_dt_living %>% merge(PC_label_living,by=c("projid"))
+```
+
+
+```{r}
+# Creating variables 'timeline', 'timeline_NIA', 'condition'.
+# total_trend_plot$timeline_NIA = total_trend_plot$fu_year - total_trend_plot$enroll_last # If we do not care about the NIA then this step is useless.
+# For decedents
+total_trend_plot_decedents = total_trend_plot_decedents %>% mutate(condition = case_when(
+    timeline < 0 & ADD == 1 ~ "Before Onset",
+    timeline >= 0 & ADD == 1 ~ "After Onset",
+    ADD == 2 & AD_label=="MCI" ~ "MCI",
+    ADD == 2 & AD_label=="NCI" ~ "NCI")) 
+length(unique(total_trend_plot_decedents$projid))
+total_trend_plot_decedents = total_trend_plot_decedents %>% filter(!is.na(condition))
+length(unique(total_trend_plot_decedents$projid))
+total_trend_plot_decedents$condition=factor(total_trend_plot_decedents$condition)
+dim(total_trend_plot_decedents)
+
+# For living
+total_trend_plot_living = total_trend_plot_living %>% mutate(condition = case_when(
+    timeline < 0 & ADD == 3 ~ "Before Onset",
+    timeline >= 0 & ADD == 3 ~ "After Onset",
+    ADD == 0 & AD_label=="MCI" ~ "MCI",
+    ADD == 0 & AD_label=="NCI" ~ "NCI")) 
+length(unique(total_trend_plot_living$projid))
+total_trend_plot_living = total_trend_plot_living %>% filter(!is.na(condition))
+length(unique(total_trend_plot_living$projid))
+total_trend_plot_living$condition=factor(total_trend_plot_living$condition)
+dim(total_trend_plot_living)
+```
+
+```{r}
+# Checking information
+library(dplyr)
+
+# Decedents 样本中，每个 condition 下的 unique projid 数
+decedents_counts <- total_trend_plot_decedents %>%
+  group_by(condition) %>%
+  summarise(n_unique_projids = n_distinct(projid)) %>%
+  arrange(condition)
+
+print(decedents_counts)
+
+# Number of unique projid in living samples for each condition.
+living_counts <- total_trend_plot_living %>%
+  group_by(condition) %>%
+  summarise(n_unique_projids = n_distinct(projid)) %>%
+  arrange(condition)
+
+print(living_counts)
+```
+
+### Using filter(condition == NA) to removing the condition = NA patients
+
+```{r}
+total_trend_plot_decedents <- total_trend_plot_decedents %>%
+  filter(!is.na(AD_label))
+dim(total_trend_plot_decedents) #  14315    23
+length(unique(total_trend_plot_decedents$projid)) # 1326
+
+total_trend_plot_living <- total_trend_plot_living %>%
+  filter(!is.na(AD_label))
+dim(total_trend_plot_living) #  8644   23
+length(unique(total_trend_plot_living$projid)) # 823
+```
+
+```{r}
+# Creating data for decedents
+cluster1_decedents =  total_trend_plot_decedents %>% subset(cluster==1) 
+cluster2_decedents =  total_trend_plot_decedents %>% subset(cluster==2)
+cluster3_decedents =  total_trend_plot_decedents %>% subset(cluster==3)
+
+# Creating data for living
+cluster1_living =  total_trend_plot_living %>% subset(cluster==1)
+cluster2_living =  total_trend_plot_living %>% subset(cluster==2)
+cluster3_living =  total_trend_plot_living %>% subset(cluster==3)
+
+total_trend_plot_decedents %>%
+  distinct(projid, cluster) %>%   
+  count(cluster, name = "n_projid")
+
+total_trend_plot_living %>%
+  distinct(projid, cluster) %>% 
+  count(cluster, name = "n_projid")
+```
+
+```{r}
+# For satisfying the condition for ploting - decedents with at least 2 visits before onset & x axis from -5 to 3.
+
+
+# In the cut version, keep only these projid values and set the timeline range from -5 to 3 
+cluster_cuts_decedents <- list()
+
+for (k in 1:3) {
+  # Dynamically generate names: "cluster1_cut", "cluster2_cut", "cluster3_cut"
+  nm <- paste0("cluster", k, "_cut_decedents")
+  
+  # Filter by cluster = k, good_ids_decedents, and timeline range
+  cluster_cuts_decedents[[nm]] <- total_trend_plot_decedents %>%
+    filter(
+      cluster %in% k,
+      # projid %in% good_ids_decedents,
+      timeline >= -5,
+      timeline <= 3
+    )
+}
+
+list2env(cluster_cuts_decedents, envir = .GlobalEnv)
+
+# 1) Count the number of unique projid values in each subset
+projid_counts <- map_int(cluster_cuts_decedents, ~ n_distinct(.x$projid))
+
+# 2) Convert to a data frame
+result <- tibble(
+  cluster        = names(projid_counts),
+  unique_projids = projid_counts
+)
+
+print(result)
+
+# table(PC_label$AD_label,PC_label$NIA)
+table(total_trend_plot_decedents$ADD,total_trend_plot_decedents$cluster)
+```
+
+```{r}
+# For living
+
+# In the cut version, only keep these projid values and set the timeline range to -5…3 
+cluster_cuts_living <- list()
+
+for (k in 1:3) {
+  # Dynamically generate names: "cluster1_cut", "cluster2_cut", "cluster3_cut"
+  nm <- paste0("cluster", k, "_cut_living")
+  
+  # Filter by cluster = k, good_ids_living, and timeline range
+  cluster_cuts_living[[nm]] <- total_trend_plot_living %>%
+    filter(
+      cluster %in% k,
+      # projid %in% good_ids_living,
+      timeline >= -5,
+      timeline <= 3
+    )
+}
+
+list2env(cluster_cuts_living, envir = .GlobalEnv)
+
+
+# 1) Count the number of unique projid values in each subset
+projid_counts <- map_int(cluster_cuts_living, ~ n_distinct(.x$projid))
+
+# 2) Convert to a data frame
+result <- tibble(
+  cluster        = names(projid_counts),
+  unique_projids = projid_counts
+)
+
+print(result)
+
+# table(PC_label$AD_label,PC_label$NIA)
+table(total_trend_plot_living$ADD,total_trend_plot_living$cluster)
+```
+
+
+```{r}
+# Print it out the rotation
+cont = PCA$rotation %>% as.table() %>% as.data.frame()%>%filter(Var2%in%c("PC1","PC2")) 
+# print(cont)
+colnames(cont) = c("feature","PC","coefficient")
+# print(cont)
+
+cont = cont %>% arrange(coefficient)
+
+PC1 = cont %>% subset(PC=="PC1") %>% mutate(neg = coefficient<0)
+PC2 = cont %>% subset(PC=="PC2") %>% mutate(neg = coefficient<0)
+
+ggplot(PC1,aes(x = reorder(feature,coefficient), y = coefficient, fill = neg)) + geom_col() + coord_flip() + labs(x="feature") +
+  theme(legend.position = "none")
+ggplot(PC2,aes(x = reorder(feature,coefficient), y = coefficient, fill = neg)) + geom_col() + coord_flip() + labs(x="feature") +
+  theme(legend.position = "none")
+```
+
+# Step 6.2 Version of step 6.
+
+```{r}
+
+clusters_list_decedents <- list(
+  cluster1_decedents     = cluster1_decedents,
+  cluster2_decedents     = cluster2_decedents,
+  cluster3_decedents     = cluster3_decedents,
+  cluster1_cut_decedents = cluster1_cut_decedents,
+  cluster2_cut_decedents = cluster2_cut_decedents,
+  cluster3_cut_decedents = cluster3_cut_decedents
+)
+
+clusters_list_decedents_complete <- list(
+  cluster1_decedents     = cluster1_decedents,
+  cluster2_decedents     = cluster2_decedents,
+  cluster3_decedents     = cluster3_decedents
+)
+
+clusters_list_decedents_cut <- list(
+  cluster1_cut_decedents = cluster1_cut_decedents,
+  cluster2_cut_decedents = cluster2_cut_decedents,
+  cluster3_cut_decedents = cluster3_cut_decedents
+)
+
+# For living
+clusters_list_living <- list(
+  cluster1_living     = cluster1_living,
+  cluster2_living     = cluster2_living,
+  cluster3_living     = cluster3_living,
+  cluster1_cut_living = cluster1_cut_living,
+  cluster2_cut_living = cluster2_cut_living,
+  cluster3_cut_living = cluster3_cut_living
+)
+
+clusters_list_living_complete <- list(
+  cluster1_living     = cluster1_living,
+  cluster2_living     = cluster2_living,
+  cluster3_living     = cluster3_living
+)
+
+clusters_list_living_cut <- list(
+  cluster1_cut_living = cluster1_cut_living,
+  cluster2_cut_living = cluster2_cut_living,
+  cluster3_cut_living = cluster3_cut_living
+)
+
+vars <- c("pred_amyloid", "pred_tangles", "pred_gpath", "pred_NIA")
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# --- Extract and export the unique projid values for each cluster in decedents ---
+# Ensure the output directory exists
+
+if (!dir.exists(OUTPUT_DEC_PROJIDS)) dir.create(OUTPUT_DEC_PROJIDS, recursive = TRUE)
+
+cluster_names <- c("cluster1_decedents", "cluster2_decedents", "cluster3_decedents")
+
+for (cl in cluster_names) {
+  df_cl <- clusters_list_decedents[[cl]]
+  
+  # Calculate the number of rows and unique projid values
+  n_rows       <- nrow(df_cl)
+  unique_ids   <- unique(df_cl$projid)
+  n_unique_ids <- length(unique_ids)
+  
+  # Print information
+  message(sprintf(">> predicted pathologies in %s | n rows: %d | unique projid: %d",
+                  cl, n_rows, n_unique_ids))
+  
+  write.csv(
+    data.frame(projid = unique_ids),
+    file      = file.path(OUTPUT_DEC_PROJIDS, paste0(cl, "_projids.csv")),
+    row.names = FALSE,
+    quote     = FALSE
+  )
+}
+```
+
+```{r}
+# --- Extract and export the unique projid values for each cluster in decedents ---
+# Ensure the output directory exists
+if (!dir.exists(OUTPUT_LIV_PROJIDS)) dir.create(OUTPUT_LIV_PROJIDS, recursive = TRUE)
+
+cluster_names <- c("cluster1_living", "cluster2_living", "cluster3_living")
+
+for (cl in cluster_names) {
+  df_cl <- clusters_list_living[[cl]]
+
+  # Calculate the number of rows and unique projid values
+  n_rows       <- nrow(df_cl)
+  unique_ids   <- unique(df_cl$projid)
+  n_unique_ids <- length(unique_ids)
+  
+  # Print information
+  message(sprintf(">> predicted pathologies in %s | n rows: %d | unique projid: %d",
+                  cl, n_rows, n_unique_ids))
+  
+  write.csv(
+    data.frame(projid = unique_ids),
+    file      = file.path(OUTPUT_LIV_PROJIDS, paste0(cl, "_projids.csv")),
+    row.names = FALSE,
+    quote     = FALSE
+  )
+}
+```
+
+# exporting data for analyzing the overlap rate between all P and 2 P version.
+```{r}
+clusters_list_decedents_AP <- clusters_list_decedents
+clusters_list_living_AP <- clusters_list_living
+
+save(
+  clusters_list_decedents_AP,
+  file = file.path(OUTPUT_DIR, "clusters_list_decedents_FromAllP.RData")
+)
+
+save(
+  clusters_list_living_AP,
+  file = file.path(OUTPUT_DIR, "clusters_list_living_FromAllP.RData")
+)
+```
+
+# Generating [min, max] for each var in vars.
+## For decedents
+```{r}
+
+# 1) Calculate the global [min, max] for each variable for the complete version of clusters
+global_limits_complete_decedents <- map(vars, function(varname) {
+  # 1) Use map() to collect the min/max of each cluster (a list, each element of length 2)
+  per_cluster <- map(clusters_list_decedents_complete, ~ range(.x[[varname]], na.rm = TRUE))
+  # 2) Flatten into a pure numeric vector (length = number of clusters × 2)
+  all_vals   <- flatten_dbl(per_cluster)
+  # 3) Take the global min/max
+  c(min(all_vals), max(all_vals))
+})
+names(global_limits_complete_decedents) <- vars
+
+
+# Version 2
+global_limits_cut_decedents <- map(vars, function(varname) {
+  # Keep only non-empty data.frames where the column has at least one non-NA value
+  valid_ranges <- clusters_list_decedents_cut %>%
+    keep(~ nrow(.x) > 0 && any(!is.na(.x[[varname]]))) %>%
+    map(~ range(.x[[varname]], na.rm = TRUE))
+
+  # Flatten into a pure numeric vector (only keep finite values), then calculate the global min/max
+  all_vals <- flatten_dbl(valid_ranges)
+  all_vals <- all_vals[is.finite(all_vals)]
+  c(min(all_vals), max(all_vals))
+})
+
+names(global_limits_cut_decedents) <- vars
+
+```
+
+## For Living
+```{r}
+
+# 1) Calculate the global [min, max] for each variable for the complete version of clusters
+global_limits_complete_living <- map(vars, function(varname) {
+  # 1) Use map() to collect the min/max of each cluster (a list, each element length 2)
+  per_cluster <- map(clusters_list_living_complete, ~ range(.x[[varname]], na.rm = TRUE))
+  # 2) Flatten into a pure numeric vector (length = number of clusters × 2)
+  all_vals   <- flatten_dbl(per_cluster)
+  # 3) Take the global min/max
+  c(min(all_vals), max(all_vals))
+})
+names(global_limits_complete_living) <- vars
+
+# 1) Calculate the global [min, max] for each variable for the cut version of clusters
+global_limits_cut_living <- map(vars, function(varname) {
+  # 1) Use map() to collect the min/max of each cluster (a list, each element length 2)
+  per_cluster <- map(clusters_list_living_cut, ~ range(.x[[varname]], na.rm = TRUE))
+  # 2) Flatten into a pure numeric vector (length = number of clusters × 2)
+  all_vals   <- flatten_dbl(per_cluster)
+  # 3) Take the global min/max
+  c(min(all_vals), max(all_vals))
+})
+names(global_limits_cut_living) <- vars
+
+# Check the results
+global_limits_complete_decedents
+global_limits_cut_decedents
+global_limits_complete_living
+global_limits_cut_living
+```
+
+
+
+
+# New version of function
+```{r}
+my_mcinci_fixed_y <- function(df, file, cluster_label, varname,
+                              global_limits_complete, global_limits_cut,
+                              dx = c("ADD","MCI","NCI")) {
+  dx <- match.arg(dx)  # 只允许 ADD / MCI / NCI
+
+  if (!dir.exists(file)) dir.create(file, recursive = TRUE)
+
+  ## -------- Truncation Rules (keep your original three sections） --------
+  custom_ranges_ADD <- list(
+    cluster2_living = c(-15, 6),
+    cluster1_living = c(-15, 7),
+    cluster3_living = c(-15, NA)
+  )
+  if (cluster_label %in% names(custom_ranges_ADD)) {
+    rr <- custom_ranges_ADD[[cluster_label]]; lb <- rr[1]; ub <- rr[2]
+    df <- df %>% filter(!(AD_label == "ADD" &
+                           ((!is.na(lb) & timeline < lb) | (!is.na(ub) & timeline > ub))))
+  }
+
+  custom_ranges_NCI <- list(
+    cluster1_living = c(NA, 22)
+  )
+  if (cluster_label %in% names(custom_ranges_NCI)) {
+    rr <- custom_ranges_NCI[[cluster_label]]; lb <- rr[1]; ub <- rr[2]
+    df <- df %>% filter(!(AD_label == "NCI" &
+                           ((!is.na(lb) & timeline < lb) | (!is.na(ub) & timeline > ub))))
+  }
+
+  custom_ranges_MCI <- list(
+    cluster3_living = c(NA, 5)
+  )
+  if (cluster_label %in% names(custom_ranges_MCI)) {
+    rr <- custom_ranges_MCI[[cluster_label]]; lb <- rr[1]; ub <- rr[2]
+    df <- df %>% filter(!(AD_label == "MCI" &
+                           ((!is.na(lb) & timeline < lb) | (!is.na(ub) & timeline > ub))))
+  }
+
+  ## -------- Keep only the target AD_label --------
+  df <- dplyr::filter(df, AD_label == dx)
+  if (nrow(df) == 0) {
+    message("Skip: no rows after filtering for ", dx, " in ", cluster_label)
+    return(invisible(NULL))
+  }
+
+  ## -------- Variable name mapping & y-axis range --------
+  nice_var_map <- c(
+    pred_amyloid = "Amyloid-β",
+    pred_tangles = "Tangles",
+    pred_gpath   = "Global AD Pathology",
+    pred_NIA     = "Pathologic AD"
+  )
+  nice_var <- nice_var_map[[varname]]
+
+  limits_list <- if (stringr::str_detect(cluster_label, "cut")) global_limits_cut else global_limits_complete
+  rng  <- limits_list[[varname]]
+  unit <- if (stringr::str_detect(cluster_label, "cut")) 1 else 5
+
+  ## -------- Plot (facet still uses ~AD_label, but there will be only one panel） --------
+  p <- ggplot(df, aes(x = timeline, y = .data[[varname]],
+                      group = projid, color = condition)) +
+    geom_point() +
+    geom_line(size = 1) +
+    stat_summary(aes(group = ADD), fun = mean, geom = "line", colour = "black") +
+    facet_wrap(~ AD_label, ncol = 1, scales = "free_x") +
+    scale_color_manual(name = "Condition",
+      values = c(
+        "Before Onset" = "#00BFC4",
+        "After Onset"  = "#F8766D",
+        "MCI"          = "#00BA38",
+        "NCI"          = "#C77CFF"
+      ),
+      drop = FALSE
+      ) +
+    scale_x_continuous(breaks = scales::breaks_width(unit), expand = c(0,0)) +
+    scale_y_continuous(limits = rng, expand = c(0,0)) +
+    # labs(title = paste0(dx, " — ", varname, " in ", cluster_label),
+    #      x = "Time", y = paste("Imputed", nice_var)) +
+    theme(
+      text            = element_text(face = "bold"),
+      plot.title      = element_text(size = 18),
+      axis.title      = element_text(face = "bold"),
+      axis.text       = element_text(face = "bold"),
+      legend.position = "none",
+      strip.text      = element_text(size = 14, face = "bold"),
+      axis.title.x    = element_blank(),
+      axis.title.y    = element_blank()
+    )
+
+  ## -------- Save: only 1 panel each time --------
+  total_width  <- 3
+  total_height <- 4
+
+  out_filename <- file.path(file, paste0(varname, "_", cluster_label, "_", dx, ".jpg"))
+
+  ggsave(
+    filename = out_filename,
+    plot     = p,
+    width    = total_width,
+    height   = total_height,
+    dpi      = 300
+  )
+  
+  # ggsave(
+  #   filename = file.path(file, paste0(varname, "_", cluster_label, "_", dx, ".jpg")),
+  #   plot     = p,
+  #   width    = total_width,
+  #   height   = total_height,
+  #   dpi      = 300
+  # )
+}
+```
+
+```{r}
+# For decedents
+for (varname in vars) {
+  for (nm in names(clusters_list_decedents)) {
+    df <- clusters_list_decedents[[nm]]
+    if (nrow(df)==0) next
+    # out_dir <- file.path("outputs/S6/ClusteringPlots", "Decedents", nm)
+    out_dir <- file.path(OUTPUT_PLOTS_DIR, "Decedents", nm)
+    for (dx in c("ADD","MCI","NCI")) {
+      my_mcinci_fixed_y(df,
+                        file          = out_dir,
+                        cluster_label = nm,
+                        varname       = varname,
+                        global_limits_complete = global_limits_complete_decedents,
+                        global_limits_cut      = global_limits_cut_decedents,
+                        dx = dx)
+    }
+  }
+}
+```
+
+```{r}
+# For living
+for (varname in vars) {
+  for (nm in names(clusters_list_living)) {
+    df <- clusters_list_living[[nm]]
+    if (nrow(df)==0) next
+    # out_dir <- file.path("outputs/S6/ClusteringPlots", "Living", nm)
+    out_dir <- file.path(OUTPUT_PLOTS_DIR, "Living", nm)
+    for (dx in c("ADD","MCI","NCI")) {
+      my_mcinci_fixed_y(df,
+                        file          = out_dir,
+                        cluster_label = nm,
+                        varname       = varname,
+                        global_limits_complete = global_limits_complete_living,
+                        global_limits_cut      = global_limits_cut_living,
+                        dx = dx)
+    }
+  }
+}
+```
+
+# function to find the # of unique projid of each condition within one cluster.
+```{r}
+count_unique_projids_by_ADD <- function(cluster_list) {
+  imap_dfr(cluster_list, ~ {
+    .x %>%
+      group_by(condition) %>%
+      summarise(
+        unique_projids = n_distinct(projid),
+        .groups = "drop"
+      ) %>%
+      mutate(cluster = .y, .before = condition)
+  })
+}
+```
+
+```{r}
+# Applying the function.  
+count_unique_projids_by_ADD(clusters_list_living)
+count_unique_projids_by_ADD(clusters_list_decedents)
+```
+
+# Ploting them together to get the plots i need
+```{r}
+# ===== Configuration: Variable suffixes for the four pathologies =====
+vars <- c("amyloid", "tangles", "gpath", "NIA")
+
+# ===== Cluster order (Decedents / Living; Complete / Cut) =====
+cluster_order_complete_dec <- c("cluster2_decedents",      "cluster1_decedents",      "cluster3_decedents")
+cluster_order_cut_dec      <- c("cluster2_cut_decedents",  "cluster1_cut_decedents",  "cluster3_cut_decedents")
+
+cluster_order_complete_liv <- c("cluster2_living",         "cluster1_living",         "cluster3_living")
+cluster_order_cut_liv      <- c("cluster2_cut_living",     "cluster1_cut_living",     "cluster3_cut_living")
+
+# ===== Utility functions =====
+
+# Construct file names: Prefer <...>_<DX>.jpg; if not found, fall back to the older naming without DX
+build_candidate_paths <- function(base_dir, cluster, v, dx) {
+  fn_with_dx <- file.path(base_dir, cluster, paste0("pred_", v, "_", cluster, "_", dx, ".jpg"))
+  fn_no_dx   <- file.path(base_dir, cluster, paste0("pred_", v, "_", cluster, ".jpg"))
+  c(fn_with_dx, fn_no_dx)
+}
+
+# Safe image reading: try each candidate path in order, read if exists, otherwise return NULL
+safe_image_read <- function(paths) {
+  for (p in paths) {
+    if (file.exists(p)) {
+      im <- tryCatch(image_read(p), error = function(e) NULL)
+      if (!is.null(im)) return(im)
+    }
+  }
+  NULL
+}
+
+# Generic horizontal append with vertical separators.
+# If n_expected is given, we pad with blank images to reach that number of columns.
+append_with_vlines_generic <- function(imgs, vline, n_expected = NULL) {
+  imgs_nonnull <- Filter(Negate(is.null), imgs)
+  if (length(imgs_nonnull) == 0) return(NULL)
+
+  if (!is.null(n_expected)) {
+    ref <- imgs_nonnull[[1]]
+    blank <- image_blank(width = image_info(ref)$width,
+                         height = image_info(ref)$height,
+                         color  = "white")
+    if (length(imgs) < n_expected) {
+      imgs <- c(imgs, rep(list(NULL), n_expected - length(imgs)))
+    }
+    imgs <- lapply(imgs, function(im) if (is.null(im)) blank else im)
+  } else {
+    imgs <- imgs_nonnull
+  }
+
+  out <- imgs[[1]]
+  if (length(imgs) >= 2) {
+    for (k in 2:length(imgs)) out <- image_append(c(out, vline, imgs[[k]]))
+  }
+  out
+}
+
+# Read one image to determine its size (for creating separator lines);
+probe_one_image <- function(base_dir, cluster_order, dx) {
+  for (cl in cluster_order) {
+    for (v in vars) {
+      paths <- build_candidate_paths(base_dir, cl, v, dx)
+      im <- safe_image_read(paths)
+      if (!is.null(im)) return(im)
+    }
+  }
+  NULL
+}
+
+
+# Vertically stack multiple rows; insert horizontal lines between rows and align widths
+stack_rows_with_hlines <- function(row_imgs) {
+  row_imgs <- Filter(Negate(is.null), row_imgs)
+  if (length(row_imgs) == 0) return(NULL)
+
+  row_width <- image_info(row_imgs[[1]])$width
+  hline <- image_blank(width = row_width, height = 2, color = "black")
+
+  grid <- row_imgs[[1]]
+  if (length(row_imgs) >= 2) {
+    for (r in 2:length(row_imgs)) {
+      target_w <- max(image_info(grid)$width, image_info(row_imgs[[r]])$width)
+      grid      <- image_extent(grid,      geometry = paste0(target_w, "x"), gravity = "northwest", color = "white")
+      row_imgs[[r]] <- image_extent(row_imgs[[r]], geometry = paste0(target_w, "x"), gravity = "northwest", color = "white")
+      grid <- image_append(c(grid, hline, row_imgs[[r]]), stack = TRUE)
+    }
+  }
+  grid
+}
+
+# ===== Main function: Compose a 4×3 grid; swap_rc=TRUE flips rows/cols (Living NCI only per your new spec) =====
+compose_dx_grid_generic <- function(
+  who = c("Decedents","Living"),
+  version = c("Complete","Cut"),
+  dx = c("ADD","MCI","NCI"),
+  strict_three_cols = TRUE,
+  swap_rc = FALSE,          # NEW: FALSE = 4 rows (pathology) × 3 cols (cluster); TRUE = 3 rows (cluster) × 4 cols (pathology)
+  base_dir_root = OUTPUT_PLOTS_DIR
+) {
+  who     <- match.arg(who)
+  version <- match.arg(version)
+  dx      <- match.arg(dx)
+
+  base_dir <- file.path(base_dir_root, who)
+  if (who == "Decedents" && version == "Complete") cluster_order <- cluster_order_complete_dec
+  if (who == "Decedents" && version == "Cut")      cluster_order <- cluster_order_cut_dec
+  if (who == "Living"    && version == "Complete") cluster_order <- cluster_order_complete_liv
+  if (who == "Living"    && version == "Cut")      cluster_order <- cluster_order_cut_liv
+
+  OUTPUT_PLOTS_2_DIR <- file.path(OUTPUT_DIR, "ClusteringPlots_2")
+  out_dir <- file.path(OUTPUT_PLOTS_2_DIR, who, "ByDiagnosis", version)
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+  probe <- probe_one_image(base_dir, cluster_order, dx)
+  if (is.null(probe)) {
+    message("No images found for ", who, " - ", version, " - ", dx, ". Skipped.")
+    return(invisible(NULL))
+  }
+  h_single <- image_info(probe)$height
+  vline    <- image_blank(width = 2, height = h_single, color = "black")
+
+  if (!swap_rc) {
+    # --- 原布局：每一行 = 一个 pathology，行内横排 3 个 cluster ---
+    n_expected <- if (strict_three_cols) length(cluster_order) else NULL
+    row_imgs <- lapply(vars, function(v) {
+      imgs <- lapply(cluster_order, function(cl) {
+        paths <- build_candidate_paths(base_dir, cl, v, dx)
+        safe_image_read(paths)
+      })
+      append_with_vlines_generic(imgs, vline, n_expected = n_expected)
+    })
+  } else {
+    # --- 对调后布局：每一行 = 一个 cluster，行内横排 4 个 pathology ---
+    n_expected <- length(vars)  # 固定 4 列
+    row_imgs <- lapply(cluster_order, function(cl) {
+      imgs <- lapply(vars, function(v) {
+        paths <- build_candidate_paths(base_dir, cl, v, dx)
+        safe_image_read(paths)
+      })
+      append_with_vlines_generic(imgs, vline, n_expected = n_expected)
+    })
+  }
+
+  row_imgs <- Filter(Negate(is.null), row_imgs)
+  if (length(row_imgs) == 0) {
+    message("No rows to compose for ", who, " - ", version, " - ", dx, ". Skipped.")
+    return(invisible(NULL))
+  }
+
+  grid <- stack_rows_with_hlines(row_imgs)
+  if (is.null(grid)) {
+    message("Compose failed for ", who, " - ", version, " - ", dx, ". Skipped.")
+    return(invisible(NULL))
+  }
+
+  out_path <- file.path(out_dir, paste0(dx, "_clusters_4x3.jpg"))
+  image_write(grid, path = out_path)
+  message("Saved: ", out_path)
+  invisible(out_path)
+}
+```
+
+```{r}
+# Decedents - Complete
+compose_dx_grid_generic("Decedents", "Complete", "ADD", strict_three_cols = FALSE)
+compose_dx_grid_generic("Decedents", "Complete", "MCI", strict_three_cols = FALSE)
+compose_dx_grid_generic("Decedents", "Complete", "NCI", strict_three_cols = FALSE)
+
+# Decedents - Cut
+compose_dx_grid_generic("Decedents", "Cut", "ADD", strict_three_cols = FALSE)
+compose_dx_grid_generic("Decedents", "Cut", "MCI", strict_three_cols = FALSE)
+compose_dx_grid_generic("Decedents", "Cut", "NCI", strict_three_cols = FALSE)
+
+# Living - Complete
+compose_dx_grid_generic("Living", "Complete", "ADD", strict_three_cols = FALSE)
+compose_dx_grid_generic("Living", "Complete", "MCI", strict_three_cols = FALSE)
+compose_dx_grid_generic("Living", "Complete", "NCI", strict_three_cols = FALSE) #, swap_rc = TRUE)
+
+# Living - Cut
+compose_dx_grid_generic("Living", "Cut", "ADD", strict_three_cols = FALSE)
+compose_dx_grid_generic("Living", "Cut", "MCI", strict_three_cols = FALSE)
+compose_dx_grid_generic("Living", "Cut", "NCI", strict_three_cols = FALSE) #, swap_rc = TRUE)
+```
+
+
+

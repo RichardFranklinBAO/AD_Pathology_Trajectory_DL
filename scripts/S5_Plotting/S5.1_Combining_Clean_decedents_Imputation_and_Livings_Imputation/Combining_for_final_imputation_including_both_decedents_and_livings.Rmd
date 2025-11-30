@@ -1,0 +1,111 @@
+---
+title: "Combining_for_final_imputation_including_both_decedents_and_livings"
+author: "Conglin BAO"
+date: "2025-10-29"
+output: html_document
+---
+
+```{r}
+library(here)
+here::i_am('scripts/S5_Plotting/S5.1_Combining_Clean_decedents_Imputation_and_Livings_Imputation/Combining_for_final_imputation_including_both_decedents_and_livings.Rmd')
+```
+
+```{r}
+# Input A: Decedents Predictions (from S3.2)
+# Location: results/S3/S3.2
+DECEDENTS_DIR <- here::here("results", "S3", "S3.2")
+
+# Input B: Livings Predictions (from S4.2)
+# Location: results/S4/S4.2
+LIVINGS_DIR <- here::here("results", "S4", "S4.2")
+
+# Output: Final Combined Data (to S5.1)
+# Target: results/S5/S5.1
+OUTPUT_DIR <- here::here("results", "S5", "S5.1")
+
+# Create output directory if needed
+if (!dir.exists(OUTPUT_DIR)) {
+  dir.create(OUTPUT_DIR, recursive = TRUE)
+}
+```
+
+```{r}
+# File names (Must match what upstream scripts produced)
+decedents_file <- file.path(DECEDENTS_DIR, "combined_clean_preds_only_for_decedents.csv")
+livings_file   <- file.path(LIVINGS_DIR, "predicted_gpath_tangles_amyloid_nia_ModifiedNIAValue_only_for_livings1106.csv") # Updated name from previous step
+
+if (!file.exists(decedents_file)) stop(glue("Missing Decedents file: {decedents_file}"))
+if (!file.exists(livings_file))   stop(glue("Missing Livings file: {livings_file}"))
+
+decedents <- read_csv(decedents_file, show_col_types = FALSE)
+livings   <- read_csv(livings_file, show_col_types = FALSE)
+
+cat(glue("Loaded Decedents: {nrow(decedents)} rows\n"))
+cat(glue("Loaded Livings:   {nrow(livings)} rows\n"))
+```
+
+```{r}
+# decedents <- read.csv(here::here('inputs', 'combined_clean_preds_only_for_decedents.csv'))
+# livings <- read.csv(here::here('inputs', 'predicted_gpath_tangles_amyloid_nia_ModifiedNIAValue_only_for_livings1106.csv'))
+```
+
+```{r}
+decedents <- decedents %>%
+  dplyr::rename_with(~ sub("^pred_(.+)$", "\\1_pred", .x), dplyr::starts_with("pred_"))
+```
+
+```{r}
+# 保证以列名对齐合并（缺失列自动补 NA）
+all_cols <- union(names(decedents), names(livings))
+for (nm in setdiff(all_cols, names(decedents))) decedents[[nm]] <- NA
+for (nm in setdiff(all_cols, names(livings)))   livings[[nm]]   <- NA
+
+# 类型统一，避免 join/排序问题
+decedents <- decedents %>% mutate(projid = as.character(projid), fu_year = as.numeric(fu_year))
+livings   <- livings   %>% mutate(projid = as.character(projid), fu_year = as.numeric(fu_year))
+
+combined <- bind_rows(
+  decedents[, all_cols],
+  livings[, all_cols]
+) %>% arrange(projid, fu_year)
+```
+
+
+```{r}
+# ---- 规范 + 校验列名 ----
+names(combined) <- trimws(tolower(names(combined)))  # 去空格并小写
+
+required_base  <- c("projid","fu_year")
+required_pred  <- c("gpath_pred","tangles_pred","amyloid_pred","niareagansc_pred")
+required_all   <- c(required_base, required_pred)
+
+missing_cols   <- setdiff(required_all, names(combined))
+extra_pred     <- setdiff(grep("^pred_", names(combined), value = TRUE), required_pred)
+dup_cols       <- names(combined)[duplicated(names(combined))]
+
+cat("---- Column check ----\n")
+cat("Missing   :", ifelse(length(missing_cols)==0, "none", paste(missing_cols, collapse=", ")), "\n")
+cat("Extra pred:", ifelse(length(extra_pred)==0, "none", paste(extra_pred, collapse=", ")), "\n")
+cat("Duplicated:", ifelse(length(dup_cols)==0, "none", paste(dup_cols, collapse=", ")), "\n")
+
+# 若必须严格一致，可以直接报错
+if (length(missing_cols) > 0) {
+  stop("Required columns missing: ", paste(missing_cols, collapse = ", "))
+}
+
+# ---- 统一类型 + 排序 ----
+combined <- combined %>%
+  dplyr::mutate(
+    projid  = as.character(projid),
+    fu_year = as.numeric(fu_year)
+  ) %>%
+  dplyr::mutate(dplyr::across(all_of(required_pred), as.numeric)) %>%  # 预测值转数值
+  dplyr::select(all_of(required_all), dplyr::everything()) %>%          # 固定列在前
+  dplyr::arrange(projid, fu_year)
+
+
+# Save to OUTPUT_DIR (results/S5/S5.1)
+out_path <- file.path(OUTPUT_DIR, "final_imputation_decedents_livings.csv")
+readr::write_csv(combined, out_path)
+```
+

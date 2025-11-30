@@ -1,0 +1,719 @@
+---
+title: "ADP_Drawing_Plots"
+author: "Conglin BAO"
+date: "2025-04-18"
+output: html_document
+---
+
+
+# setup environment;
+```{r}
+getwd()
+library(tidyverse)
+library(conflicted)
+library(reshape2)
+library(lattice)
+library(readxl)
+library(ROCR);
+library(plotROC)
+library(pROC)
+library(lme4)
+library(glmnet)
+library(caret)
+library(e1071)
+#library(party)
+library(gbm)
+library(ggpubr)
+library(glue)
+library(dplyr)
+library(grid)  # textGrob
+library(tidyr)
+library(magick)
+library(data.table)
+options(stringsAsFactors = FALSE)
+filter <- dplyr::filter
+lag <- dplyr::lag
+# install.packages("fs")  # 若未安装
+library(fs)
+library(here)
+here::i_am('scripts/S5_Plotting/S5.2_ploting_the_trajectories_of_pathologies/S5.2.1_PADPPlottingwithADDas0&ModifiedNIAValue.Rmd')
+
+theme_set(theme(
+  plot.caption = element_text(hjust = 0.5),
+  legend.position="bottom",
+  text = element_text(size = 28,face="bold"), # Base text size and font for the plot
+  plot.title = element_text(size = 34, face = "bold"), # Size and style for the plot title
+  axis.title.x = element_text(size = 44, face = "bold"), # Size and style for the x-axis title
+  axis.title.y = element_text(size = 44, face = "bold",angle=90), # Size and style for the y-axis title
+  axis.text.x = element_text(size = 28, face = "bold"), # Size and style for the x-axis title
+  axis.text.y = element_text(size = 28, face = "bold",angle=90),
+  legend.text = element_text(size = 30), # Size for the legend text
+  legend.title = element_text(size = 36, face = "bold"),
+  strip.text = element_text(
+    size = 36, color = "black")# Size and style for the legend title
+))
+```
+
+```{r}
+# --- 2. Define Input & Output Paths (Reproducible) ---
+
+# Input A: Final Imputed Data (from S5.1)
+INPUT_IMPUTED_DIR <- here::here("results", "S5", "S5.1")
+IMPUTED_DATA_FILE <- file.path(INPUT_IMPUTED_DIR, "final_imputation_decedents_livings.csv")
+
+# Input B: Raw Data (Static files in data/raw)
+RAW_DATA_DIR <- here::here("data", "raw")
+SURVIVAL_DATA_FILE <- file.path(RAW_DATA_DIR, "YT_data_surv_032024_true_baseline.csv")
+
+# Output: S5.2.1 Results
+OUTPUT_DIR <- here::here("results", "S5", "S5.2", "S5.2.1")
+OUTPUT_PLOTS_DIR <- file.path(OUTPUT_DIR, "plots_2x2")
+
+# Create directories
+dir_create(OUTPUT_DIR)
+dir_create(OUTPUT_PLOTS_DIR)
+
+print(glue("Reading Imputed Data from: {INPUT_IMPUTED_DIR}"))
+print(glue("Reading Raw Data from:     {RAW_DATA_DIR}"))
+print(glue("Saving Outputs to:         {OUTPUT_DIR}"))
+```
+
+```{r}
+# --- 3. Load Data ---
+
+if (!file.exists(IMPUTED_DATA_FILE)) stop(glue("Missing Input File: {IMPUTED_DATA_FILE}"))
+
+# Load Survival Data & Fix ID Type
+dt_surv_yr <- read_csv(SURVIVAL_DATA_FILE, show_col_types = FALSE) %>% 
+  select(projid, time, event, ADD) %>%
+  mutate(projid = as.character(projid))  # FORCE projid to character
+
+# Load Predicted Pathologies & Join
+Predicted_Pathology <- read_csv(IMPUTED_DATA_FILE, show_col_types = FALSE) %>%
+  mutate(projid = as.character(projid)) %>% # FORCE projid to character here too
+  left_join(dt_surv_yr, by = "projid") %>%   # Now types match!
+  group_by(projid) %>%
+  mutate(n_fu_year = max(fu_year)) %>%
+  ungroup()
+
+cat(glue("Loaded Data: {nrow(Predicted_Pathology)} rows"))
+
+```
+
+# Adding the condition that 
+  (1: At least two visits. n_fu_year > 0
+   2: No ADD at the first 2 visits. ) 
+## This step is for getting dcfdx.
+```{r}
+# Data preparasion that we will use for adding the dcfdx value
+# Load the 3 raw Excel files
+long_741  <- read_excel(file.path(RAW_DATA_DIR, "dataset_741_long_06-07-2022.xlsx"))
+long_742  <- read_excel(file.path(RAW_DATA_DIR, "dataset_742_long_06-07-2022.xlsx"))
+long_1057 <- read_excel(file.path(RAW_DATA_DIR, "dataset_1057_long_07-11-2022.xlsx"))
+dataset_long <- full_join(long_741, long_742, long_1057, by=c("projid","fu_year","study")) #31058 214
+
+# clinical variables used for risk prediction
+clinic_var_list = c("age_at_visit",  "bmi", "cogn_global", "cts_mmse30",  "dbp_avg", "sbp_avg", "phys5itemsum",        
+"cesdsum",              "soc_net",              "hypertension_cum",     "cancer_cum",          
+"dm_cum",               "headinjrloc_cum",      "thyroid_cum",          "claudication_cum",    
+"heart_cum",            "stroke_cum",           "vasc_risks_sum",       "mental_health_rx",    
+"analgesic_rx",         "antibiotic_rx" ,       "antihyp_all_rx",       "cardiac_rx",          
+"antianxiety_rx",       "anti_inflammatory_rx", "aspirin_rx",           "lipid_lowering_rx",   
+"insomnia_rx",          "diabetes_rx",          "educ",                 "msex",                
+"mateduc" ,             "pateduc",              "extraversion_6",       "anxiety_10items",     
+"early_hh_ses" ,        "neuroticism_12",       "angertrait",           "alcohol_g_bl",        
+"ldai_bl" ,             "smoking",              "apoe_E2",              "apoe_E4",             
+"TOMM40_S",             "TOMM40_L",             "TOMM40_VL",            
+"motor_dexterity",      "motor_gait",           "motor_handstreng",
+"bradysc",              "gaitsc",               "rigidsc",
+"tremsc",   "q1slp",  "q2slp", "q4slp", "q5slp")
+length(clinic_var_list)
+
+dataset_long_var <- dataset_long[, (colnames(dataset_long) %in% c("projid", "study", "fu_year","dcfdx", clinic_var_list))]
+
+
+dataset_long_var_fixed <- dataset_long_var %>%
+  mutate(
+    projid = as.character(projid),
+    fu_year = as.numeric(fu_year)
+  )
+
+Predicted_Pathology_fixed <- Predicted_Pathology %>%
+  mutate(
+    projid = as.character(projid),
+    fu_year = as.numeric(fu_year)
+  )
+
+Predicted_Pathology <- Predicted_Pathology_fixed %>%
+  left_join(
+    dataset_long_var_fixed %>% select(projid, fu_year, dcfdx),
+    by = c("projid", "fu_year")
+  ) 
+
+print(Predicted_Pathology) # 147,716 x 11
+```
+
+```{r}
+# Checking information
+dcfdxValueInfo <- Predicted_Pathology %>%
+  count(dcfdx)
+print(dcfdxValueInfo)
+```
+
+
+# Testing for chaing the order: first adding more infor and then adding conditions
+
+# Adding more information on the dataset, onset, enroll_last and age_death.
+```{r}
+# Adding 'onset' & 'enroll_last' & 'age_death'.& 'start' & 'dcfdx_max'
+EVENT_DATA_FILE <- file.path(RAW_DATA_DIR, "dt_long_baseline_merged_03_2024.tsv")
+if (!file.exists(EVENT_DATA_FILE)) stop(glue("Missing Event Data: {EVENT_DATA_FILE}"))
+
+event_dt <- read_tsv(EVENT_DATA_FILE, show_col_types = FALSE)
+
+event_dt_fixed <- event_dt %>%
+  mutate(
+    projid = as.character(projid),
+    fu_year = as.numeric(fu_year)
+  )
+
+
+Predicted_Pathology <- Predicted_Pathology %>%
+  left_join(
+    event_dt_fixed %>% select(projid, fu_year, onset, enroll_last, age_death, start),
+    by = c("projid", "fu_year")
+  ) 
+```
+
+```{r}
+# Checking information
+
+# Calculate the number of NAs for each column
+na_counts <- colSums(is.na(Predicted_Pathology))
+# Keep only those columns where the number of NAs is greater than 0
+na_tbl <- na_counts[na_counts > 0]
+na_dt <- data.table(
+  variable  = names(na_tbl),
+  n_missing = as.integer(na_tbl)
+)
+print(na_dt)
+```
+
+```{r}
+# Autofill - down then up due to the occurrence of dcfdx 
+# (need to group_by(projid) and arrange by fu_year in ascending order)
+# Assume the first column of na_dt contains the column names to be filled
+cols_to_fill <- na_dt[[1]]  
+print(cols_to_fill)
+
+Predicted_Pathology <- Predicted_Pathology %>%
+  group_by(projid) %>%
+  arrange(fu_year, .by_group = TRUE) %>%
+  # Pass cols_to_fill to fill()
+  fill(everything(), .direction = "downup") %>%
+  ungroup() %>%
+  filter(!is.na(ADD))  %>% # Reason: ADD = NA indicates other types of dementia, not within the scope of discussion 
+  filter(!is.na(dcfdx)) # Reason: dcfdx_max is needed to select AD_status. If dcfdx = NA, AD_status is useless and is deleted.
+      
+  
+print(dim(Predicted_Pathology)) # 23942    15
+
+# Adding dcfdx_max
+Predicted_Pathology <- Predicted_Pathology %>% group_by(projid) %>% mutate(dcfdx_max = max(dcfdx)) %>% ungroup() %>%  filter(dcfdx_max != 6)
+
+print(dim(Predicted_Pathology)) # 23324    16
+
+# Checking again to ensure there are no NA value.
+na_counts_2 <- colSums(is.na(Predicted_Pathology))
+# Keep only those columns where the number of NAs is greater than 0
+na_tbl2 <- na_counts_2[na_counts_2 > 0]
+na_dt2 <- data.table(
+  variable  = names(na_tbl2),
+  n_missing = as.integer(na_tbl2)
+)
+print(na_dt2)
+  
+print(Predicted_Pathology) # 23,942 × 16
+```
+
+
+# Adding two conditions - n_fu_year > 0; if fu_year in [0, 1], then dcfdx must be [1, 2, 3]
+```{r}
+# Adding two conditions - n_fu_year > 0; if fu_year in [0, 1], then dcfdx must be [1, 2, 3]
+Predicted_Pathology <- Predicted_Pathology %>%
+  group_by(projid) %>%
+  filter(
+    n_fu_year[1] > 0,
+    all(ifelse(fu_year %in% c(0,1), dcfdx %in% c(1,2,3), TRUE))
+  ) %>%
+  ungroup()
+print(Predicted_Pathology) # 132,652 x 11
+```
+
+
+```{r}
+# No real function, just checking.
+counts_by_ADD1 <- Predicted_Pathology %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD1)
+```
+
+
+# Checking how many unique projid for living ADD patients there are.
+```{r}
+library(dplyr)
+
+# 1) Directly filter all rows that meet the conditions
+living_add_df <- Predicted_Pathology %>%
+  filter(ADD == 1, is.na(age_death))
+
+
+# 2) Check which unique projid exist
+living_add_ids <- living_add_df %>%
+  pull(projid) %>%
+  unique()
+
+# 3) Check if any exist
+if (length(living_add_ids) > 0) {
+  message("The following living ADD patients exist: ", paste(living_add_ids, collapse = ", "))
+} else {
+  message("No living ADD patients.")
+}
+length(living_add_ids)
+```
+
+# Step for changing ADD status for living ADD participants into 3
+```{r}
+Predicted_Pathology <- Predicted_Pathology %>%
+  mutate(
+    ADD = case_when(
+      ADD == 1 & is.na(age_death) ~ 3,  # living ADD→3
+      TRUE                        ~ ADD  
+    )
+  )
+write_csv(Predicted_Pathology, file.path(OUTPUT_DIR, "Predicted_Pathology_AddingInforWith2Conditions.csv"))
+```
+
+```{r}
+# Checking information
+# 1) Count the number of distinct ADD values for each projid
+pp_add_counts <- Predicted_Pathology %>%
+  group_by(projid) %>%
+  summarise(n_add = n_distinct(ADD), .groups = "drop")
+
+# 2) Check how many times each n_add occurs
+table(pp_add_counts$n_add)
+
+pp_add_counts %>%
+  filter(n_add != 1)
+```
+
+```{r}
+# Just checking information
+counts_by_ADD2 <- Predicted_Pathology %>%
+  group_by(ADD) %>%
+  summarise(n_unique_projid = n_distinct(projid)) %>%
+  arrange(ADD)
+
+print(counts_by_ADD2)
+```
+
+
+
+
+
+
+
+# Drawing Pictures regarding to the Predicted Variables.
+```{r}
+Predicted_Pathology$ADD = factor(Predicted_Pathology$ADD,levels = c(0, 1, 2, 3),labels=c("Control", "Decedents with ADD Onset","Decedents Without ADD", "Living with ADD Onset")) # Control is Living without ADD Onset.
+
+Predicted_Pathology_ctrl = Predicted_Pathology %>% filter(ADD=="Control")
+cat("For Predicted_Pathology_ctrl, the sample size is:", dim(Predicted_Pathology_ctrl), "with unique projid as", length(unique(Predicted_Pathology_ctrl$projid)), '\n\n')
+
+Predicted_Pathology_Don = Predicted_Pathology %>% filter(ADD=="Decedents with ADD Onset")
+cat("For Predicted_Pathology_Don, the sample size is:", dim(Predicted_Pathology_Don), "with unique projid as", length(unique(Predicted_Pathology_Don$projid)), '\n\n')
+
+Predicted_Pathology_d = Predicted_Pathology %>% filter(ADD=="Decedents Without ADD")
+cat("For Predicted_Pathology_d, the sample size is:", dim(Predicted_Pathology_d), "with unique projid as", length(unique(Predicted_Pathology_d$projid)), '\n\n')
+
+Predicted_Pathology_Lon = Predicted_Pathology %>% filter(ADD=="Living with ADD Onset")
+cat("For Predicted_Pathology_Lon, the sample size is:", dim(Predicted_Pathology_Lon), "with unique projid as", length(unique(Predicted_Pathology_Lon$projid)), '\n\n')
+```
+
+```{r}
+# Obtainning the y range for each pathology
+all_subsets <- list(
+  Ctrl = Predicted_Pathology_ctrl,
+  Don   = Predicted_Pathology_Don,
+  Dec  = Predicted_Pathology_d,
+  Lon = Predicted_Pathology_Lon
+)
+
+# 2) Specify the four pathology column names to process
+path_vars <- c("tangles_pred", "amyloid_pred", "gpath_pred", "niareagansc_pred")
+
+# 3) Use lapply/map to calculate the global min/max of each pathology across all subsets
+global_ranges <- lapply(path_vars, function(colname) {
+  # Extract the column from each subset, then flatten into a vector, and compute the global min/max
+  vals <- unlist(lapply(all_subsets, function(df) df[[colname]]), use.names = FALSE)
+  range(vals, na.rm = TRUE)
+})
+names(global_ranges) <- path_vars
+
+# Print to check
+global_ranges
+```
+
+```{r}
+tangles_lim <- global_ranges[["tangles_pred"]]
+amyloid_lim <- global_ranges[["amyloid_pred"]]
+gpath_lim <- global_ranges[["gpath_pred"]]
+nia_lim <- global_ranges[["niareagansc_pred"]]
+```
+
+
+# Drawing Predicred Pathology for ADD == "Control" Living without ADD participants
+```{r}
+n_rows_ctrl <- nrow(Predicted_Pathology_ctrl)
+n_projids_ctrl <- length(unique(Predicted_Pathology_ctrl$projid))
+sample_info_ctrl <- paste("n rows:", n_rows_ctrl, "\nunique projid:", n_projids_ctrl)
+```
+
+```{r}
+cat(">>", "Control |", sample_info_ctrl, "\n")
+
+a = ggplot(Predicted_Pathology_ctrl,aes(x=fu_year,y=tangles_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = tangles_pred,group = ADD), fun=mean,linewidth=1.0, colour="black", geom="line")+scale_y_continuous(limits = tangles_lim, expand = c(0, 0))+xlab(NULL)+ ylab(NULL)
+
+a
+
+e = ggplot(Predicted_Pathology_ctrl,aes(x=fu_year,y=amyloid_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = amyloid_pred,group = ADD), fun=mean,linewidth=1.0, colour="black", geom="line")+scale_y_continuous(limits = amyloid_lim, expand = c(0, 0))+xlab(NULL)+ylab(NULL) 
+
+e
+
+i = ggplot(Predicted_Pathology_ctrl,aes(x=fu_year,y=gpath_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = gpath_pred,group = ADD), fun=mean, linewidth=1.0,colour="black", geom="line") +scale_y_continuous(limits = gpath_lim, expand = c(0, 0))+ xlab(NULL)+ylab(NULL)
+
+i
+
+
+m = ggplot(Predicted_Pathology_ctrl,aes(x=fu_year,y=niareagansc_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = niareagansc_pred,group = ADD), fun=mean,linewidth=1.0, colour="black", geom="line") +scale_y_continuous(limits = nia_lim, expand = c(0, 0))+xlab(NULL)+ylab(NULL)
+
+m
+```
+
+
+
+# Drawing Predicred Pathology for ADD == "Decedents ADD Onset"
+```{r}
+Predicted_Pathology_Don$follow = Predicted_Pathology_Don$fu_year-Predicted_Pathology_Don$onset
+dim(Predicted_Pathology_Don) # 4518   12
+Predicted_Pathology_Don$Onset = factor(Predicted_Pathology_Don$follow>=0,labels=c("No Onset","Onset"))
+dim(Predicted_Pathology_Don) # 4518   13
+```
+
+```{r}
+n_rows_on <- nrow(Predicted_Pathology_Don)
+n_projids_on <- length(unique(Predicted_Pathology_Don$projid))
+sample_info_on <- paste("n rows:", n_rows_on, "\nunique projid:", n_projids_on)
+```
+
+```{r}
+cat(">>", "Don |", sample_info_on, "\n")
+
+b = ggplot(Predicted_Pathology_Don,aes(x=follow,y=tangles_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = tangles_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = tangles_lim, expand = c(0, 0)) + 
+  labs(y = "ADD", title = "Decedents") +
+  # theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank(),  
+    legend.position = "bottom",
+    legend.title    = element_text(size = 16), 
+    legend.text     = element_text(size = 16)
+  ) +
+  coord_cartesian(xlim = c(NA, 10))
+
+b
+warnings()
+
+
+f = ggplot(Predicted_Pathology_Don,aes(x=follow,y=amyloid_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = amyloid_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = amyloid_lim, expand = c(0, 0))+labs(y = "ADD", title = "Decedents") +
+  # theme_minimal() +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank(),  
+    legend.position = "bottom",
+    legend.title    = element_text(size = 16),
+    legend.text     = element_text(size = 16)
+  )+
+  coord_cartesian(xlim = c(NA, 10))
+
+f
+warnings()
+
+
+j = ggplot(Predicted_Pathology_Don,aes(x=follow,y=gpath_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = gpath_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = gpath_lim, expand = c(0, 0)) +labs(y = "ADD", title = "Decedents") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank(),  
+    legend.position = "bottom",
+    legend.title    = element_text(size = 16),
+    legend.text     = element_text(size = 16)
+  )+
+  coord_cartesian(xlim = c(NA, 10))
+
+j
+warnings()
+
+
+n = ggplot(Predicted_Pathology_Don,aes(x=follow,y=niareagansc_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = niareagansc_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = nia_lim, expand = c(0, 0)) +labs(y = "ADD", title = "Decedents") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank(), 
+    legend.position = "bottom",
+    legend.title    = element_text(size = 16),
+    legend.text     = element_text(size = 16)
+  )+
+  coord_cartesian(xlim = c(NA, 10))
+n
+warnings()
+
+
+```
+
+
+# Drawing Predicred Pathology for ADD == "Decedents Without ADD"
+```{r}
+Predicted_Pathology_d$follow = Predicted_Pathology_d$fu_year-Predicted_Pathology_d$enroll_last
+```
+
+```{r}
+n_rows_d <- nrow(Predicted_Pathology_d)
+n_projids_d <- length(unique(Predicted_Pathology_d$projid))
+sample_info_d <- paste("n rows:", n_rows_d, "\nunique projid:", n_projids_d)
+```
+
+```{r}
+cat(">>", "D |", sample_info_d, "\n")
+
+c = ggplot(Predicted_Pathology_d,aes(x=follow,y=tangles_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = tangles_pred,group = ADD), fun.y=mean,size=1.0, colour="black", geom="line") +scale_y_continuous(limits = tangles_lim, expand = c(0, 0))+ xlab(NULL)+ylab(NULL)+
+scale_color_manual(values=c('#00BA38')) +
+  labs(y = "Without ADD") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank()
+  )
+c
+
+g = ggplot(Predicted_Pathology_d,aes(x=follow,y=amyloid_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = amyloid_pred,group = ADD), fun.y=mean,size=1.0, colour="black", geom="line") +scale_y_continuous(limits = amyloid_lim, expand = c(0, 0))+xlab(NULL)+ylab(NULL)+
+scale_color_manual(values=c('#00BA38')) +  labs(y = "Without ADD") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank() 
+  )
+g
+
+k = ggplot(Predicted_Pathology_d,aes(x=follow,y=gpath_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = gpath_pred,group = ADD), fun.y=mean,size=1.0, colour="black", geom="line") +scale_y_continuous(limits = gpath_lim, expand = c(0, 0))+xlab(NULL)+ylab(NULL)+
+scale_color_manual(values=c('#00BA38')) +   labs(y = "Without ADD") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank()
+  )
+
+
+k
+
+o = ggplot(Predicted_Pathology_d,aes(x=follow,y=niareagansc_pred,group=projid,color=ADD))+geom_point()+geom_line()+
+stat_summary(aes(y = niareagansc_pred,group = ADD), fun.y=mean,size=1.0, colour="black", geom="line") +scale_y_continuous(limits = nia_lim, expand = c(0, 0))+xlab(NULL)+ylab(NULL)+
+scale_color_manual(values=c('#00BA38')) +   labs(y = "Without ADD") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank() 
+  )
+o
+```
+
+
+# Drawing Predicred Pathology for ADD == "Living ADD Onset"
+```{r}
+Predicted_Pathology_Lon$follow = Predicted_Pathology_Lon$fu_year-Predicted_Pathology_Lon$onset
+dim(Predicted_Pathology_Lon) # 4518   12
+Predicted_Pathology_Lon$Onset = factor(Predicted_Pathology_Lon$follow>=0,labels=c("No Onset","Onset"))
+dim(Predicted_Pathology_Lon) # 4518   13
+```
+
+```{r}
+n_rows_on <- nrow(Predicted_Pathology_Lon)
+n_projids_on <- length(unique(Predicted_Pathology_Lon$projid))
+sample_info_on <- paste("n rows:", n_rows_on, "\nunique projid:", n_projids_on)
+```
+
+```{r}
+cat(">>", "Lon |", sample_info_on, "\n")
+
+d = ggplot(Predicted_Pathology_Lon,aes(x=follow,y=tangles_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = tangles_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = tangles_lim, expand = c(0, 0)) +labs(title = "Living") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_blank(), #element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank() 
+  ) +
+  coord_cartesian(xlim = c(NA, 5))
+d
+warnings()
+
+
+h = ggplot(Predicted_Pathology_Lon,aes(x=follow,y=amyloid_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = amyloid_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = amyloid_lim, expand = c(0, 0)) + labs(title = "Living") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_blank(), #element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank()  
+  ) +
+  coord_cartesian(xlim = c(NA, 5))
+
+h
+warnings()
+
+
+l = ggplot(Predicted_Pathology_Lon,aes(x=follow,y=gpath_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = gpath_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = gpath_lim, expand = c(0, 0)) + labs(title = "Living") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_blank(), #element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank()  
+  ) + 
+  coord_cartesian(xlim = c(NA, 5))
+
+l
+warnings()
+
+
+p = ggplot(Predicted_Pathology_Lon,aes(x=follow,y=niareagansc_pred,group=projid,color=Onset))+geom_point()+geom_line()+
+stat_summary(aes(y = niareagansc_pred,group = ADD), fun.y=mean, size=1.0,colour="black", geom="line")+scale_y_continuous(limits = nia_lim, expand = c(0, 0)) +labs(title = "Living") +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title.y    = element_blank(), #element_text(face = "bold", size = 14, vjust = 1.2),
+    axis.title.x    = element_blank()  
+  ) +
+  coord_cartesian(xlim = c(NA, 5))
+
+p
+warnings()
+
+
+```
+
+# Drawing four pictures together
+```{r}
+# --- Save 2x2 Grid Plots (Reproducible) ---
+
+# 1) Ensure the output directory exists
+# (This was defined earlier as: results/S5/S5.2/S5.2.1/plots_2x2)
+if (!dir.exists(OUTPUT_PLOTS_DIR)) {
+  dir.create(OUTPUT_PLOTS_DIR, recursive = TRUE)
+}
+
+# 2) Helper function to save plots
+make_2x2 <- function(p_with, p_without, p_living_with, p_living_without, filename) {
+  # Create full path using OUTPUT_PLOTS_DIR
+  outfile <- file.path(OUTPUT_PLOTS_DIR, filename)
+  
+  raw <- ggarrange(
+    p_with,         p_living_with,
+    p_without,      p_living_without,
+    ncol = 2, nrow = 2,
+    common.legend = TRUE, legend = "bottom"
+  )
+  
+  ggsave(outfile, plot = raw, width = 12, height = 10)
+  cat(glue("Saved plot: {filename}\n"))
+}
+
+# 3) Generate and Save 2x2 Plots for each Pathology
+# Note: Ensure plot objects (b, c, d, a, etc.) are defined before this step
+
+# Tangles
+make_2x2(
+  p_with            = b,   # Decedents with ADD
+  p_without         = c,   # Decedents without ADD
+  p_living_with     = d,   # Living with ADD
+  p_living_without  = a,   # Living without ADD
+  filename          = "Tangles_2x2.jpg"
+)
+
+# Amyloid
+make_2x2(f, g, h, e, "Amyloid_2x2.jpg")
+
+# Gpath
+make_2x2(j, k, l, i, "Gpath_2x2.jpg")
+
+# NIA
+make_2x2(n, o, p, m, "NIA_2x2.jpg")
+
+# --- Advanced Image Processing with Magick ---
+
+if (!requireNamespace("magick", quietly = TRUE)) {
+  install.packages("magick")
+}
+library(magick)
+
+# 1) Read the four generated images using dynamic paths
+tangles_img <- image_read(file.path(OUTPUT_PLOTS_DIR, "Tangles_2x2.jpg"))
+amyloid_img <- image_read(file.path(OUTPUT_PLOTS_DIR, "Amyloid_2x2.jpg"))
+gpath_img   <- image_read(file.path(OUTPUT_PLOTS_DIR, "Gpath_2x2.jpg"))
+nia_img     <- image_read(file.path(OUTPUT_PLOTS_DIR, "NIA_2x2.jpg"))
+
+# 2) Get dimensions
+info     <- image_info(tangles_img)
+w_single <- info$width
+h_single <- info$height
+
+# 3) Create Separator Bars
+# Vertical Bar (2px wide)
+vline <- image_blank(width = 2, height = h_single, color = "black")
+# Horizontal Bar (2px high)
+hline <- image_blank(width = w_single * 2 + 2, height = 2, color = "black")
+
+# 4) Assemble the Grid
+# Top Row: Amyloid | Tangles
+top_row    <- image_append(c(amyloid_img, vline, tangles_img))  
+
+# Bottom Row: NIA | Gpath
+bottom_row <- image_append(c(nia_img, vline, gpath_img))  
+
+# Combine Top and Bottom with Horizontal line
+combined   <- image_append(c(top_row, hline, bottom_row), stack = TRUE)
+
+# 5) Save Final Combined Images to OUTPUT_PLOTS_DIR
+image_write(combined,   path = file.path(OUTPUT_PLOTS_DIR, "Combined_with_separators.jpg"))
+image_write(top_row,    path = file.path(OUTPUT_PLOTS_DIR, "Combined_with_separators_top.jpg"))
+image_write(bottom_row, path = file.path(OUTPUT_PLOTS_DIR, "Combined_with_separators_bottom.jpg"))
+
+cat(glue("Final combined images saved to: {OUTPUT_PLOTS_DIR}"))
+```
+
+
+
+
