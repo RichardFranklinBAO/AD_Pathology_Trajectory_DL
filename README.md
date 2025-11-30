@@ -18,7 +18,7 @@
 - Makefile orchestrates the above; see commands below.
 
 ## Reproducibility Matrix
-S0 R Environment Setup (Reproducibility)
+- S0 R Environment Setup (Reproducibility)
 This project uses `renv` to ensure the R environment is fully reproducible.
 1.  **Install `renv` (if necessary):**
     ```R
@@ -30,22 +30,22 @@ This project uses `renv` to ensure the R environment is fully reproducible.
     renv::restore()
     ```
     *(This command reads the `renv.lock` file and installs the exact package versions used for the analysis.)*
-S1 Data Preparation, Reproducible
+- S1 Data Preparation, Reproducible
 The data processing and sanity checks in scripts/S1_Data_Preparation/... can be executed in this repository using the synthetic dummy dataset.
 
-S2 GLM Baseline, Reproducible
+- S2 GLM Baseline, Reproducible
 The Elastic-Net GLM baseline model in scripts/S2_GLM/... runs successfully using synthetic features for workflow validation and baseline comparison.
 
-S3.1.1 & S3.1.2, Not Reproducible via Makefile
+- S3.1.1 & S3.1.2, Not Reproducible via Makefile
 These training steps were executed on an HPC cluster. The best model architectures and hyperparameters are already manually saved in configs/best_models.py, so this stage is intentionally skipped in Makefile automation.
 
-S3.2 Prediction for Decedents, Reproducible
+- S3.2 Prediction for Decedents, Reproducible
 Predictions using the stored cluster-generated parameters can run automatically, without repeating model training.
 
-S4 Longitudinal Imputation & S5 Plotting, Limited or Not Runnable on Synthetic Data
+- S4 Longitudinal Imputation & S5 Plotting, Limited or Not Runnable on Synthetic Data
 The S4 and S5 steps are expected to fail or produce incomplete outputs under synthetic dummy data due to the lack of realistic longitudinal disease signals. This is a data-quality limitation, not a code-logic or syntax issue.
 
-Full Pipeline, Fully Runnable in Local Secure Environment Only
+- Full Pipeline, Fully Runnable in Local Secure Environment Only
 When running locally with real longitudinal AD data placed safely in data/raw/, the entire pipeline completes end-to-end and produces all expected results and plots.
 
 ## How to Run
