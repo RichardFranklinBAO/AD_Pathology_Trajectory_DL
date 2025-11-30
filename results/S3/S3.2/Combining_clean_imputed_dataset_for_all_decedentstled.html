@@ -358,7 +358,7 @@ display: none;
 
 
 <pre class="r"><code>library(here)</code></pre>
-<pre><code>## here() starts at /Users/franklinbao/Desktop/ML/Codes/Modifications/AD_Github_Updated_Version/scripts/S3_Training_ML_Models_and_Predicting_Pathologies_only_for_Decedents/S3.2_Predicting_Pathologies_only_for_Decedents</code></pre>
+<pre><code>## here() starts at /Users/franklinbao/Desktop/ML/Codes/Modifications/AD_Github_Updated_Version</code></pre>
 <pre class="r"><code>library(readr)
 library(dplyr)</code></pre>
 <pre><code>## 
@@ -467,23 +467,23 @@ print(dplyr::glimpse(combined))</code></pre>
 ## Columns: 6
 ## $ projid           &lt;int&gt; 100005, 100007, 100010, 100012, 100026, 100033, 10003…
 ## $ fu_year          &lt;dbl&gt; 9, 5, 4, 8, 0, 1, 2, 9, 9, 6, 4, 1, 0, 0, 8, 8, 7, 2,…
-## $ pred_amyloid     &lt;dbl&gt; -0.004767373, 0.173350975, 0.185844481, 0.108412780, …
-## $ pred_niareagansc &lt;dbl&gt; -0.085345931, -0.264706016, 0.112132758, 0.123854391,…
-## $ pred_tangles     &lt;dbl&gt; 0.028475290, 0.210319772, 0.143507540, 0.076274410, 0…
-## $ pred_gpath       &lt;dbl&gt; -0.224780291, -0.102970630, -0.136427134, 0.012496969…
+## $ pred_amyloid     &lt;dbl&gt; 0.10711742, 0.44121259, 0.25143209, 0.14939758, 0.176…
+## $ pred_niareagansc &lt;dbl&gt; 0.045546412, -0.032877497, 0.056664359, 0.043535572, …
+## $ pred_tangles     &lt;dbl&gt; 0.10047495, 0.02491238, 0.02267620, 0.05329089, 0.102…
+## $ pred_gpath       &lt;dbl&gt; 0.05891273, 0.75826550, 0.42390949, 0.16598538, 0.062…
 ## # A tibble: 114 × 6
 ##    projid fu_year pred_amyloid pred_niareagansc pred_tangles pred_gpath
 ##     &lt;int&gt;   &lt;dbl&gt;        &lt;dbl&gt;            &lt;dbl&gt;        &lt;dbl&gt;      &lt;dbl&gt;
-##  1 100005       9     -0.00477          -0.0853      0.0285    -0.225  
-##  2 100007       5      0.173            -0.265       0.210     -0.103  
-##  3 100010       4      0.186             0.112       0.144     -0.136  
-##  4 100012       8      0.108             0.124       0.0763     0.0125 
-##  5 100026       0     -0.0130            0.0366      0.00291   -0.225  
-##  6 100033       1      0.0281           -0.0399     -0.00955    0.0170 
-##  7 100035       2      0.00367          -0.0405      0.0765    -0.00463
-##  8 100052       9     -0.0896           -0.150       0.0696    -0.0103 
-##  9 100056       9      0.100             0.0251      0.130      0.00664
-## 10 100065       6     -0.0360           -0.121       0.0292     0.0141 
+##  1 100005       9       0.107            0.0455       0.100      0.0589
+##  2 100007       5       0.441           -0.0329       0.0249     0.758 
+##  3 100010       4       0.251            0.0567       0.0227     0.424 
+##  4 100012       8       0.149            0.0435       0.0533     0.166 
+##  5 100026       0       0.177            0.0682       0.102      0.0625
+##  6 100033       1       0.274            0.0670       0.0610     0.0257
+##  7 100035       2      -0.109           -0.0159       0.0557    -0.245 
+##  8 100052       9      -0.561           -0.0394       0.0590    -0.438 
+##  9 100056       9       0.0181           0.0437       0.0660    -0.396 
+## 10 100065       6       0.441           -0.0340       0.0628     0.0205
 ## # ℹ 104 more rows</code></pre>
 <pre class="r"><code># 5. Save Results to results/S3/S3.2/
 # Target Path: results/S3/S3.2/combined_clean_preds_only_for_decedents.csv

@@ -18,6 +18,18 @@
 - Makefile orchestrates the above; see commands below.
 
 ## Reproducibility Matrix
+S0 R Environment Setup (Reproducibility)
+This project uses `renv` to ensure the R environment is fully reproducible.
+1.  **Install `renv` (if necessary):**
+    ```R
+    install.packages("renv")
+    ```
+2.  **Restore the environment:**
+    Open R in the project root and run:
+    ```R
+    renv::restore()
+    ```
+    *(This command reads the `renv.lock` file and installs the exact package versions used for the analysis.)*
 S1 Data Preparation, Reproducible
 The data processing and sanity checks in scripts/S1_Data_Preparation/... can be executed in this repository using the synthetic dummy dataset.
 

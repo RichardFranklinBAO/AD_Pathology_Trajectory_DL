@@ -359,7 +359,7 @@ display: none;
 
 <pre class="r"><code>library(readr)
 library(here)</code></pre>
-<pre><code>## here() starts at /Users/franklinbao/Desktop/ML/Codes/Modifications/AD_Github_Updated_Version/scripts/S1_Data_Preparation/S1.2_all_livings</code></pre>
+<pre><code>## here() starts at /Users/franklinbao/Desktop/ML/Codes/Modifications/AD_Github_Updated_Version</code></pre>
 <pre class="r"><code>library(dplyr) </code></pre>
 <pre><code>## 
 ## Attaching package: &#39;dplyr&#39;</code></pre>
@@ -373,7 +373,7 @@ library(here)</code></pre>
 library(glue)
 conflicted::conflicts_prefer(dplyr::filter)</code></pre>
 <pre><code>## [conflicted] Will prefer dplyr::filter over any other package.</code></pre>
-<pre class="r"><code>conflicted::conflicts_prefer(dplyr::lag)  # 若也用到了 lag</code></pre>
+<pre class="r"><code>conflicted::conflicts_prefer(dplyr::lag) </code></pre>
 <pre><code>## [conflicted] Will prefer dplyr::lag over any other package.</code></pre>
 <pre class="r"><code>here::i_am(&#39;scripts/S1_Data_Preparation/S1.2_all_livings/Checking_data_and_generating_all_livings_participants.Rmd&#39;)</code></pre>
 <pre><code>## here() starts at /Users/franklinbao/Desktop/ML/Codes/Modifications/AD_Github_Updated_Version</code></pre>
@@ -427,7 +427,7 @@ combined_df &lt;- combined_df %&gt;%
   mutate(projid = as.character(projid),
          fu_year = as.numeric(fu_year))
 
-# 2) 再做 join
+# 2) join
 out2 &lt;- combined_df %&gt;% left_join(age_death_per_id, by = &quot;projid&quot;)</code></pre>
 <pre class="r"><code>cat(glue(&quot;The length of unique projid of out2 is {length(unique(out2$projid))}.\n&quot;))  # 2639</code></pre>
 <pre><code>## The length of unique projid of out2 is 280.</code></pre>

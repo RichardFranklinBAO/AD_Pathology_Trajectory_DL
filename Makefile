@@ -43,7 +43,19 @@ S5_2_2_RMD = $(SCRIPTS_DIR)/S5_Plotting/S5.2_ploting_the_trajectories_of_patholo
 # 2. Phony Targets (Commands)
 # ==============================================================================
 
-.PHONY: all check_config s1_prep s2_glm s3_predict s4_livings s5_plots
+.PHONY: all check_config s1_prep s2_glm s3_predict s4_livings s5_plots clean install dummy_data
+
+# --- Environment Setup Targets ---
+install:
+	@echo " Installing Python dependencies..."
+	pip install -r requirements.txt
+	@echo " Installing R dependencies via renv..."
+	$(RSCRIPT) -e "renv::restore(prompt = FALSE)"
+
+dummy_data:
+	@echo " Generating synthetic data..."
+	python scripts/generate_dummy.py
+
 
 all: check_config s1_prep s2_glm s3_predict s4_livings s5_plots
 	@echo "======================================================="
