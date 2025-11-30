@@ -1,7 +1,7 @@
 # Alzheimer's Pathology Trajectory Prediction Pipeline
 
-**A Reproducible Machine Learning Workflow for Longitudinal Clinical Data**.
-One-stop, mixed Make/Python/R workflow for Alzheimer's pathology trajectory modeling and prediction. This repo mirrors the research pipeline with a reproducibility-first layout.
+**A Reproducible Machine Learning Workflow for Longitudinal Clinical Data**
+- One-stop, mixed Make/Python/R workflow for Alzheimer's pathology trajectory modeling and prediction. This repo mirrors the research pipeline with a reproducibility-first layout.
 
 ## Data (dummy-friendly)
 - Repo includes synthetic/dummy data only for demonstration, as real longitudinal AD datasets are confidential and cannot be shared publicly.
