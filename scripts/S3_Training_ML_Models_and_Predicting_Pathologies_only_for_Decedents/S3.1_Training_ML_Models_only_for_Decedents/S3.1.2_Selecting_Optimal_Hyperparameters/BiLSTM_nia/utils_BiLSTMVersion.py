@@ -53,9 +53,9 @@ SCRIPTS_DIR = ROOT / "scripts"
 
 # 3. Print paths for verification (when running this script directly)
 if __name__ == "__main__":
-    print(f"✅ Project Root: {ROOT}")
-    print(f"📂 Data Directory: {DATA_DIR}")
-    print(f"📂 Results Directory: {RESULTS_DIR}")
+    print(f"Project Root: {ROOT}")
+    print(f"Data Directory: {DATA_DIR}")
+    print(f"Results Directory: {RESULTS_DIR}")
     
     
 # Utility functions

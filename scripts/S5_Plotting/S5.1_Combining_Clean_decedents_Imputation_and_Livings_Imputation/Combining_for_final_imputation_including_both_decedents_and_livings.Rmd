@@ -55,12 +55,12 @@ decedents <- decedents %>%
 ```
 
 ```{r}
-# 保证以列名对齐合并（缺失列自动补 NA）
+# Ensure column-aligned merge by matching names (add NA for missing columns)
 all_cols <- union(names(decedents), names(livings))
 for (nm in setdiff(all_cols, names(decedents))) decedents[[nm]] <- NA
 for (nm in setdiff(all_cols, names(livings)))   livings[[nm]]   <- NA
 
-# 类型统一，避免 join/排序问题
+# Unify types to avoid join/sort issues
 decedents <- decedents %>% mutate(projid = as.character(projid), fu_year = as.numeric(fu_year))
 livings   <- livings   %>% mutate(projid = as.character(projid), fu_year = as.numeric(fu_year))
 
@@ -72,8 +72,9 @@ combined <- bind_rows(
 
 
 ```{r}
-# ---- 规范 + 校验列名 ----
-names(combined) <- trimws(tolower(names(combined)))  # 去空格并小写
+# ---- Standardize and validate column names ----
+names(combined) <- trimws(tolower(names(combined)))  # trim spaces and force lowercase
+
 
 required_base  <- c("projid","fu_year")
 required_pred  <- c("gpath_pred","tangles_pred","amyloid_pred","niareagansc_pred")
@@ -88,19 +89,19 @@ cat("Missing   :", ifelse(length(missing_cols)==0, "none", paste(missing_cols, c
 cat("Extra pred:", ifelse(length(extra_pred)==0, "none", paste(extra_pred, collapse=", ")), "\n")
 cat("Duplicated:", ifelse(length(dup_cols)==0, "none", paste(dup_cols, collapse=", ")), "\n")
 
-# 若必须严格一致，可以直接报错
+# If strict consistency is required, raise an error
 if (length(missing_cols) > 0) {
   stop("Required columns missing: ", paste(missing_cols, collapse = ", "))
 }
 
-# ---- 统一类型 + 排序 ----
+# ---- Unify types and sort ----
 combined <- combined %>%
   dplyr::mutate(
     projid  = as.character(projid),
     fu_year = as.numeric(fu_year)
   ) %>%
-  dplyr::mutate(dplyr::across(all_of(required_pred), as.numeric)) %>%  # 预测值转数值
-  dplyr::select(all_of(required_all), dplyr::everything()) %>%          # 固定列在前
+  dplyr::mutate(dplyr::across(all_of(required_pred), as.numeric)) %>%  # convert predictions to numeric
+  dplyr::select(all_of(required_all), dplyr::everything()) %>%          # place key columns at the front
   dplyr::arrange(projid, fu_year)
 
 

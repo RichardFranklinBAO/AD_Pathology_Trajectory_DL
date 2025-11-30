@@ -71,7 +71,7 @@ library("ggVennDiagram")
 library(glue) 
 library(purrr) 
 library(magick)
-# install.packages("fs")  # 若未安装
+# install.packages("fs")  # if you didn't install
 library(fs)
 library(here)
 here::i_am('scripts/S5_Plotting/S5.2_ploting_the_trajectories_of_pathologies/S5.2.2_CleanedVersion.Rmd')
@@ -582,7 +582,7 @@ dim(total_trend_plot_living)
 # Checking information
 library(dplyr)
 
-# Decedents 样本中，每个 condition 下的 unique projid 数
+# For decedents: number of unique projid values in each condition
 decedents_counts <- total_trend_plot_decedents %>%
   group_by(condition) %>%
   summarise(n_unique_projids = n_distinct(projid)) %>%
@@ -1229,7 +1229,7 @@ compose_dx_grid_generic <- function(
   vline    <- image_blank(width = 2, height = h_single, color = "black")
 
   if (!swap_rc) {
-    # --- 原布局：每一行 = 一个 pathology，行内横排 3 个 cluster ---
+    # --- Original layout: each row = one pathology, with 3 clusters arranged horizontally ---
     n_expected <- if (strict_three_cols) length(cluster_order) else NULL
     row_imgs <- lapply(vars, function(v) {
       imgs <- lapply(cluster_order, function(cl) {
@@ -1239,7 +1239,7 @@ compose_dx_grid_generic <- function(
       append_with_vlines_generic(imgs, vline, n_expected = n_expected)
     })
   } else {
-    # --- 对调后布局：每一行 = 一个 cluster，行内横排 4 个 pathology ---
+    # --- Swapped layout: each row = one cluster, with 4 pathologies arranged horizontally ---
     n_expected <- length(vars)  # 固定 4 列
     row_imgs <- lapply(cluster_order, function(cl) {
       imgs <- lapply(vars, function(v) {

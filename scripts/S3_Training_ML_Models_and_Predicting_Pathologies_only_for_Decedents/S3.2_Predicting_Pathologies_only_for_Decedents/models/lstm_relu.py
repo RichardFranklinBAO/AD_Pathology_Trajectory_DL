@@ -1,7 +1,5 @@
 import torch.nn as nn
 import torch
-# 把 utils_BiLasTrue_ReLU.py 里的 class LSTMModel 剪切到这里
-# 并改名为 class LSTMReLU
 class LSTMReLU(nn.Module):
     """
     An LSTM-based model for sequence prediction tasks with Batch Normalization.
@@ -38,7 +36,7 @@ class LSTMReLU(nn.Module):
     def forward(self, x):
         # LSTM returns: (output, (hidden, cell))
         _, (hidden, _) = self.lstm(x)  
-        # 如果是多层双向 LSTM，最后一层的正向隐藏状态在 hidden[-2]，反向隐藏状态在 hidden[-1]
+        # If using a multi-layer bidirectional LSTM, the final forward hidden state is stored at hidden[-2], and the final backward hidden state is stored at hidden[-1].
         if self.bidirectional:
             forward_hidden = hidden[-2]  # shape: (batch_size, hidden_dim)
             backward_hidden = hidden[-1]  # shape: (batch_size, hidden_dim)

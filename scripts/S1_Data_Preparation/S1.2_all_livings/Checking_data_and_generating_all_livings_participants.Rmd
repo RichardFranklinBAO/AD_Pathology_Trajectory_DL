@@ -12,7 +12,7 @@ library(dplyr)
 library(conflicted)
 library(glue)
 conflicted::conflicts_prefer(dplyr::filter)
-conflicted::conflicts_prefer(dplyr::lag)  # 若也用到了 lag
+conflicted::conflicts_prefer(dplyr::lag) 
 here::i_am('scripts/S1_Data_Preparation/S1.2_all_livings/Checking_data_and_generating_all_livings_participants.Rmd')
 ```
 
@@ -50,7 +50,7 @@ combined_df <- combined_df %>%
   mutate(projid = as.character(projid),
          fu_year = as.numeric(fu_year))
 
-# 2) 再做 join
+# 2) join
 out2 <- combined_df %>% left_join(age_death_per_id, by = "projid")
 ```
 

@@ -63,9 +63,9 @@ if __name__ == "__main__":
 
 def create_sequences_with_ids(df, ids, feature_cols, target_cols):
     """
-    返回 (projid, feature_seq, target_seq, fu_year_seq)
+    return (projid, feature_seq, target_seq, fu_year_seq)
     - feature_seq: (T, in_dim) float32
-    - target_seq:  (T, out_dim) float32  (推理时可不用，但保留不碍事)
+    - target_seq:  (T, out_dim) float32 
     - fu_year_seq: (T,) numpy
     """
     seqs = []
@@ -79,7 +79,7 @@ def create_sequences_with_ids(df, ids, feature_cols, target_cols):
 
 
 class VariableLengthTensorDatasetWithIds(Dataset):
-    """保存 (projid, X_seq, Y_seq, fu_year_seq) 的 Dataset；仅用于推理 DataLoader。"""
+    """A Dataset that stores (projid, X_seq, Y_seq, fu_year_seq); used only for inference DataLoader."""
     def __init__(self, seqs):
         self.seqs = seqs
     def __len__(self):
@@ -91,11 +91,11 @@ class VariableLengthTensorDatasetWithIds(Dataset):
 def custom_collate_with_ids(batch):
     """
     batch: list of (projid, X_seq_np, Y_seq_np, fu_year_np)
-    返回：
+    return：
       - projids: list[str/int]
       - packed_X: PackedSequence
-      - lens: list[int]  原始长度，方便逐个切片
-      - fu_years: list[np.ndarray] 与各个样本一一对应
+      - lens: list[int]  
+      - fu_years: list[np.ndarray] 
     """
     projids   = [b[0] for b in batch]
     X_list    = [torch.tensor(b[1]) for b in batch]
@@ -135,18 +135,17 @@ class LSTMAllStepsHead(nn.Module):
         preds = self.fc(normed)                                                   # (B, T, out_dim)
         return preds, lens
 
-# --- NEW: 用训练好权重，对给定 test_ids 做全时间步推理，返回 tidy DataFrame ---
 
 def infer_all_timesteps_df(trained_model, df_all, test_ids, feature_cols, target_cols,
                            hidden_size, num_layers, dropout_rate, bidirectional=True, device="cpu"):
-    # 1) 构造带 ID 的序列
+    # 1) Construct sequences with IDs
     seqs = create_sequences_with_ids(df_all, test_ids, feature_cols, target_cols)
     loader = DataLoader(
         VariableLengthTensorDatasetWithIds(seqs),
         batch_size=len(seqs), shuffle=False, collate_fn=custom_collate_with_ids
     )
 
-    # 2) 用“全时间步头”，并加载同一套权重
+    # 2) Use the all-timesteps head and load the same weights
     all_steps = LSTMAllStepsHead(
         input_dim=len(feature_cols),
         hidden_dim=hidden_size,
@@ -158,7 +157,7 @@ def infer_all_timesteps_df(trained_model, df_all, test_ids, feature_cols, target
     all_steps.load_state_dict(trained_model.state_dict())
     all_steps.eval()
 
-    # 3) 推理 & 整理
+    # 3) Run inference and aggregate results
     out_rows = []
     with torch.no_grad():
         for projids, packed_X, lens, fu_years in loader:
@@ -456,10 +455,6 @@ class PearsonCorrelationLoss(nn.Module):
         pearson_corr = pearson_correlation(y_pred, y_true)
         return 1 - pearson_corr.sum()  # Minimize (1 - Pearson correlation)
 
-
-# def train_and_evaluate_model(model, ...): # 多了一个参数 model
-#      # model = LSTMModel(...)  <-- 删掉这一行
-#      # 直接使用传进来的 model 变量
      
      
 def train_and_evaluate_model(
@@ -545,9 +540,8 @@ def train_and_evaluate_model(
         model.train()
         train_loss = 0
         for batch in train_loader:
-                # 兼容 2 元/3 元返回
             if len(batch) == 3:
-                batch_x, batch_y, _ = batch   # 训练不需要 projid
+                batch_x, batch_y, _ = batch 
             else:
                 batch_x, batch_y = batch
             optimizer.zero_grad()
@@ -608,7 +602,7 @@ def train_and_evaluate_model(
             yhat = outputs.cpu().numpy()
             ytrue = batch_y.cpu().numpy()
 
-            # R2：按列
+            # R2：following column
             for i in range(output_dim):
                 r2_scores.append(compute_r2(yhat[:, i], ytrue[:, i]))
 
@@ -641,9 +635,9 @@ def cross_validate_lstm(model, data, n_splits, input_dim, output_dim, num_epochs
     for fold, (train_idx, test_idx) in enumerate(kf.split(data)):
         train_data = [data[i] for i in train_idx]
         test_data  = [data[i] for i in test_idx]
-        test_ids   = [train_ids[i] for i in test_idx]   # 这一步拿到本 fold 的 test projid
+        test_ids   = [train_ids[i] for i in test_idx]   # obtain the test projid of this fold
 
-        # 训练/验证
+        # train/validate
         (fold_r2, _, _, _, best_model) = train_and_evaluate_model(
             model = model,
             train_data=train_data,
@@ -667,7 +661,7 @@ def cross_validate_lstm(model, data, n_splits, input_dim, output_dim, num_epochs
         )
         all_r2_scores.append(fold_r2)
 
-        # --- NEW: 用本 fold 的最佳权重，对 test_ids 做“全时间步”推理并收集 ---
+        # --- NEW: Use the best weights from this fold to run full-timestep inference on test_ids and collect predictions ---
         df_fold_pred = infer_all_timesteps_df(
             trained_model=best_model,
             df_all=df_all,
@@ -686,91 +680,14 @@ def cross_validate_lstm(model, data, n_splits, input_dim, output_dim, num_epochs
     all_r2_scores = np.array(all_r2_scores)
     mean_r2_scores = all_r2_scores.mean(axis=0)
 
-    # 5 个折的 OOF 全时间步预测合并
+    # Merge full-timestep OOF predictions from all 5 folds
     oof_df = pd.concat(fold_pred_dfs, ignore_index=True) if fold_pred_dfs else \
              pd.DataFrame(columns=["projid","fu_year"]+[f"pred_{t}" for t in target_columns])
 
     return mean_r2_scores, oof_df
 
 
-# def select_lstm_hyperparameters(train_sequences, train_ids, feature_columns, target_columns, 
-#                               hyperparameter_grid, seed=1217, n_splits=5, num_epochs=100,
-#                               patience=10, lr_scheduler_patience=5, lr_factor=0.5):
-#     """
-#     Perform hyperparameter evaluation with k-fold cross-validation for an LSTM model.
 
-#     Args:
-#         scaled_train (DataFrame): Training dataset.
-#         scaled_test (DataFrame): Testing dataset.
-#         feature_columns (list): List of feature column names.
-#         target_columns (list): List of target column names.
-#         hyperparameter_grid (dict): Dictionary specifying hyperparameter ranges.
-#         seed (int): Random seed for reproducibility.
-#         n_splits (int): Number of splits for cross-validation.
-#         num_epochs (int): Number of training epochs.
-#         patience (int): Number of epochs with no improvement to stop training.
-#         lr_scheduler_patience (int): Number of epochs with no improvement before reducing the learning rate.
-#         lr_factor (float): Factor by which the learning rate is reduced.
-
-#     Returns:
-#         DataFrame: Results containing hyperparameters and R2 scores.
-#     """
-
-#     # Generate all combinations of hyperparameters
-#     hyperparameter_combinations = list(itertools.product(
-#         hyperparameter_grid['hidden_size'],
-#         hyperparameter_grid['num_layers'],
-#         hyperparameter_grid['learning_rate'],
-#         hyperparameter_grid['batch_size'],
-#         hyperparameter_grid['dropout_rate']
-#     ))
-
-#     # Store results
-#     results = []
-
-#     # Loop through each hyperparameter combination
-#     for combination in hyperparameter_combinations:
-#         hidden_size, num_layers, learning_rate, batch_size, dropout_rate = combination
-#         # print(f"Evaluating combination: hidden_size={hidden_size}, num_layers={num_layers}, "
-#         #       f"learning_rate={learning_rate}, batch_size={batch_size}")
-
-#         # Perform cross-validation
-#         mean_r2_scores, clean_df = cross_validate_lstm(
-#             data=train_sequences,
-#             ids=train_ids,
-#             n_splits=n_splits,
-#             hidden_size=hidden_size,
-#             num_layers=num_layers,
-#             learning_rate=learning_rate,
-#             batch_size=batch_size,
-#             input_dim=len(feature_columns),
-#             output_dim=len(target_columns),
-#             num_epochs=num_epochs,
-#             patience=patience,
-#             lr_scheduler_patience=lr_scheduler_patience,
-#             lr_factor=lr_factor,
-#             seed=seed,
-#             dropout_rate=dropout_rate,
-#             target_names=target_columns
-#         )
-
-#         # Prepare result entry
-#         result_entry = {
-#             'hidden_size': hidden_size,
-#             'num_layers': num_layers,
-#             'learning_rate': learning_rate,
-#             'batch_size': batch_size,
-#             'dropout_rate': dropout_rate
-#         }
-
-#         # Add mean scores to the result entry with outcome names
-#         for i, mean_score in enumerate(mean_r2_scores):
-#             result_entry[target_columns[i]] = mean_score
-
-#         results.append(result_entry)
-
-#     # Convert results to a DataFrame
-#     return pd.DataFrame(results), clean_df
 
 def select_lstm_hyperparameters(model, train_sequences, feature_columns, target_columns, 
                                 hyperparameter_grid, seed=1217, n_splits=5, num_epochs=100,
@@ -821,12 +738,13 @@ def select_lstm_hyperparameters(model, train_sequences, feature_columns, target_
             'batch_size': batch_size,
             'dropout_rate': dropout_rate
         }
-        # 为每个 target 列填入其均值 R²
+        # Fill in the mean R² for each target column
         for i, tgt in enumerate(target_columns):
             row[tgt] = float(mean_r2[i])
         results.append(row)
 
-        # 以“本组合的平均 R² 的均值”（跨多 target）作为选择指标（你也可按某一列 tgt 指定）
+        # Use the overall average of mean R² across all targets as the selection metric
+        # (you could also select based on a specific target column instead)
         combo_score = float(np.mean(mean_r2))
         if combo_score > best_score:
             best_score = combo_score

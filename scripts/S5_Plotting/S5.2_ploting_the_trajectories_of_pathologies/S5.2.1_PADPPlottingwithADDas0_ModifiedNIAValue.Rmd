@@ -33,7 +33,7 @@ library(data.table)
 options(stringsAsFactors = FALSE)
 filter <- dplyr::filter
 lag <- dplyr::lag
-# install.packages("fs")  # 若未安装
+# install.packages("fs")  # if you didn't install
 library(fs)
 library(here)
 here::i_am('scripts/S5_Plotting/S5.2_ploting_the_trajectories_of_pathologies/S5.2.1_PADPPlottingwithADDas0&ModifiedNIAValue.Rmd')
