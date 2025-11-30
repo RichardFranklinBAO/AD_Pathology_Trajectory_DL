@@ -20,16 +20,7 @@
 ## Reproducibility Matrix
 - S0 R Environment Setup (Reproducibility)
 This project uses `renv` to ensure the R environment is fully reproducible.
-1.  **Install `renv` (if necessary):**
-    ```R
-    install.packages("renv")
-    ```
-2.  **Restore the environment:**
-    Open R in the project root and run:
-    ```R
-    renv::restore()
-    ```
-    *(This command reads the `renv.lock` file and installs the exact package versions used for the analysis.)*
+
 - S1 Data Preparation, Reproducible
 The data processing and sanity checks in scripts/S1_Data_Preparation/... can be executed in this repository using the synthetic dummy dataset.
 
@@ -50,13 +41,16 @@ When running locally with real longitudinal AD data placed safely in data/raw/, 
 
 ## How to Run
 ```bash
-# 1) Generate synthetic/dummy data into data/dummy/ from current raw schemas
+# 1) Lock and install all Python and R dependencies
+make install
+
+# 2) Generate synthetic/dummy data into data/dummy/ from current raw schemas
 python scripts/generate_dummy.py
 
-# 2) Run the full workflow (S4/S5 may be limited/fail on synthetic, which is expected)
+# 3) Run the full workflow (S4/S5 may be limited/fail on synthetic, which is expected)
 make all
 
-# 3) Clean temporary artifacts
+# 4) Clean temporary artifacts
 make clean
 ```
 - Synthetic data is solely for workflow verification and it cannot run the whole process; real-data mode passes all stages.
