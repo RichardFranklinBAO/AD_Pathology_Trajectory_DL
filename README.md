@@ -65,5 +65,12 @@ make clean
 ## Future Improvements
 - Enhance synthetic longitudinal generator to better mimic slopes/temporal correlations (e.g., spline, spectral/FDA-inspired simulations) so S4/S5 preview more realistically.
 
+## Future Research Directions
+While this project demonstrates the predictive power of Recurrent Neural Networks (LSTM) in modeling Alzheimer's pathology trajectories, it also highlights the challenge of model interpretability in clinical settings. My future research aims to bridge the gap between **Deep Learning** and **Statistical Inference** by:
+
+1.  **Interpretable Machine Learning**: Developing statistical frameworks to quantify feature importance and uncertainty in "black-box" deep learning models, ensuring reliable clinical decision support.
+2.  **High-Dimensional Inference**: Investigating regularization methods (e.g., sparse penalties) for longitudinal data where the number of biomarkers exceeds the sample size ($p > n$), a common challenge in multi-omics and wearable device data.
+3.  **Integration with Causal Inference**: Moving beyond prediction to understanding the causal mechanisms driving disease progression using observational longitudinal data.
+
 ## Collaborators
 - Pipeline design and experimentation were collaboratively developed by me and my senior colleague; identifiable names are intentionally omitted in this public GitHub version.
